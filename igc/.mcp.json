@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mame-mcp-server": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "../mame-mcp-server/dist/index.js"
+      ],
+      "env": {}
+    }
+  }
+}
