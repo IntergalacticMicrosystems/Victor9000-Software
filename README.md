@@ -4,3 +4,4 @@
 InterGalactic Commander  
 Volkov / Midnight / Norton Commander-like 2-pane file manager
 
+![igc screenshot](igc/igc-screenshot.png)
