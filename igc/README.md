@@ -23,15 +23,15 @@ A two-pane file manager for Victor 9000 DOS 3.1, inspired by Volkov Commander.
 ## Keyboard Controls
 
 ### Navigation
-| Key | Action |
-|-----|--------|
-| Tab | Switch between panels |
-| Up/Down | Move cursor |
-| PgUp/PgDn | Scroll page (Word arrow keys) |
-| Home/End | Jump to first/last file |
-| Enter | Open directory or view file |
-| Backspace | Go to parent directory |
-| Space | Select/deselect file |
+| Key | Action | Vic Key |
+|-----|--------|---------|
+| Tab | Switch between panels | |
+| Up/Down | Move cursor | |
+| PgUp/PgDn | Scroll page | Word arrow keys |
+| Home/End | Jump to first/last file | ? |
+| Enter | Open directory or view file | |
+| Backspace | Go to parent directory | |
+| Space | Select/deselect file | |
 
 ### Function Keys
 | Key | Action |
