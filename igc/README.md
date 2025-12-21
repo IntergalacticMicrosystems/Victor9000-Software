@@ -1,4 +1,4 @@
-# IGC - File Manager for Victor 9000
+# InterGalactic Commander  - File Manager for Victor 9000
 
 A two-pane file manager for Victor 9000 DOS 3.1, inspired by Volkov Commander.
 
@@ -77,6 +77,4 @@ The program automatically adapts to available RAM:
 | 384KB | 512 | 32KB |
 | 512KB+ | 1024+ | 64KB |
 
-## License
 
-Public domain / educational use.
