@@ -1,6 +1,6 @@
-# InterGalactic Commander  - File Manager for Victor 9000
+# InterGalactic Commander ~ File Manager for Victor 9000
 
-A two-pane file manager for Victor 9000 DOS 3.1, inspired by Volkov Commander.
+**A two-pane file manager for Victor 9000 DOS 3.1, inspired by Volkov Commander.**  
 
 ![IGC Screenshot](igc-screenshot.png)
 
