@@ -4,6 +4,13 @@ A two-pane file manager for Victor 9000 DOS 3.1, inspired by Volkov Commander.
 
 ![IGC Screenshot](igc-screenshot.png)
 
+## Known issues / Limitations
+
+- **DOS < 2.11** - Untested
+- **DOS 2.11** - Selecting an empty floppy drive falls back to DOS
+- **Speed issues** - Uses DOS file access, some things are slow
+- **Keys** - Non-Standard/American keyboard configs may not map 100%
+
 ## Features
 
 - **Dual-pane interface** - Navigate two directories simultaneously
@@ -20,7 +27,7 @@ A two-pane file manager for Victor 9000 DOS 3.1, inspired by Volkov Commander.
 |-----|--------|
 | Tab | Switch between panels |
 | Up/Down | Move cursor |
-| PgUp/PgDn | Scroll page |
+| PgUp/PgDn | Scroll page (Word arrow keys) |
 | Home/End | Jump to first/last file |
 | Enter | Open directory or view file |
 | Backspace | Go to parent directory |
@@ -33,17 +40,9 @@ A two-pane file manager for Victor 9000 DOS 3.1, inspired by Volkov Commander.
 | F2 | Create directory |
 | F3 | View file (read-only) |
 | F4 | Edit file |
-| F5 | Copy |
-| F6 | Move |
-| F7 | Delete |
-| F8 | Rename |
-| F10 | Quit |
-
-### Other
-| Key | Action |
-|-----|--------|
-| ESC | Cancel / Quit |
-| Q | Quit |
+| F5 | Copy/Move |
+| F6 | Delete |
+| F7 | Quit |
 
 ## Installation
 
