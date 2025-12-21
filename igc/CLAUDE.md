@@ -1,77 +1,170 @@
-# Project: igc
+# IGC Development Guide
 
 Two-pane file manager for Victor 9000 DOS 3.1, written in C using Open Watcom v2.
-Inspired by Midnight Commander.
 
-Always update the documentation when changes are made.
-
-## Key Features
-- Dynamic memory management (scales from 128KB to 512KB+ systems)
-- Direct VRAM access for fast screen updates
-- Optimized cursor movement (only redraws affected rows, not entire panels)
-- Victor 9000 keyboard translation (F-keys, arrow keys)
-- Support for large directories (500+ files) and large files in editor
-- INI configuration file for saving/loading panel state
+This file is for LLM use, README.md is for human use.
+Please update the documentation when changes are made.
 
 ## Build
+
 ```bash
-make            # Build igc.exe
-make clean      # Clean build artifacts
-make deploy     # Deploy to MAME disk image
+make              # Build bin/igc.exe
+make clean        # Remove build artifacts
+make deploy       # Deploy to MAME disk image
+make keytest      # Build keyboard test utility
 ```
 
-Compiler: Open Watcom v2, compact memory model (`-mc`), 8086 target
-Output: bin/igc.exe (~25KB)
+## Architecture
 
-## Usage
+### Target Platform
+- Victor 9000 / Sirius 1 computer
+- DOS 3.1, 8086 processor (16-bit real mode)
+- Minimum 128KB RAM, scales to 512KB+
+- 80x25 text mode with direct VRAM access
 
-### Keyboard Controls
-- **Tab**: Switch between left/right panels
-- **Arrows**: Navigate files
-- **Enter**: Enter directory or view file
-- **Backspace**: Go to parent directory
-- **Space**: Toggle file selection (selected files marked with `*`)
-- **ESC/Q**: Quit
+### Compiler Settings
+- Open Watcom v2 cross-compiler (Linux host)
+- Compact memory model (`-mc`): near code, far data
+- 8086-only instructions (`-0`)
+- Optimized for size (`-os`)
 
-### Function Keys
-- **F1**: Drive selection
-- **F2**: Make directory
-- **F3**: View file (read-only)
-- **F4**: Edit file
-- **F5**: Copy files
-- **F6**: Move files
-- **F7**: Delete files
-- **F8**: Rename file
-- **F10**: Quit
+### Memory Model
+Uses far pointers (`__far`) for data larger than 64KB. Memory tier detection at startup scales all buffers:
+- `MEM_TINY` (<64KB free): 64 files/panel, 4KB editor
+- `MEM_LOW` (64-128KB): 256 files/panel, 16KB editor
+- `MEM_MEDIUM` (128-200KB): 512 files/panel, 32KB editor
+- `MEM_HIGH` (>200KB): 1024 files/panel, 64KB editor
 
 ## Source Files
+
+| File | Purpose |
+|------|---------|
+| `igc.h` | Core types, constants, screen/keyboard codes |
+| `main.c` | Entry point, event loop, key dispatch |
+| `mem.c/h` | Far heap allocation, tier detection |
+| `screen.c/h` | VRAM access (0xF000), CRTC cursor control |
+| `keyboard.c/h` | DOS INT 9h, Victor 9000 key translation |
+| `dosapi.c/h` | DOS INT 21h wrappers (files, directories, memory) |
+| `panel.c/h` | File list management, directory reading |
+| `ui.c/h` | Frame drawing, headers, F-key bar |
+| `dialog.c/h` | Modal dialogs with screen save/restore |
+| `fileops.c/h` | Copy, move, delete, mkdir, rename |
+| `editor.c/h` | Text viewer (F3) and editor (F4) |
+| `util.c/h` | String/path utilities |
+| `config.c/h` | INI file persistence |
+
+## Key Data Structures
+
+```c
+// Key event (keyboard.h)
+typedef struct {
+    uint8_t type;   // KEY_NONE, KEY_ASCII, KEY_EXTENDED
+    uint8_t code;   // ASCII or scan code
+} KeyEvent;
+
+// File entry (panel.h) - 24 bytes
+typedef struct {
+    char name[13];      // 8.3 filename + null
+    uint8_t attr;       // DOS attributes
+    uint16_t date;      // DOS date format
+    uint16_t time;      // DOS time format
+    uint32_t size;      // File size
+    bool_t selected;    // Selection flag
+} FileEntry;
+
+// Panel state (panel.h)
+typedef struct {
+    uint8_t drive;          // Current drive (0=A, 1=B, etc)
+    char path[MAX_PATH_LEN]; // Current directory
+    uint16_t top;           // First visible file index
+    uint16_t cursor;        // Selected file index
+    uint16_t sel_count;     // Number of selected files
+    FileList files;         // Dynamic array of FileEntry
+} Panel;
 ```
-src/
-├── igc.h        - Core types, constants, structures
-├── main.c       - Entry point, event loop
-├── mem.h/c      - Memory management, dynamic allocation
-├── screen.h/c   - VRAM access, text output
-├── keyboard.h/c - DOS keyboard with V9K translation
-├── dosapi.h/c   - DOS INT 21h wrappers
-├── panel.h/c    - Panel structures, directory reading
-├── ui.h/c       - Frame, headers, F-key bar
-├── dialog.h/c   - Modal dialogs, confirmations
-├── fileops.h/c  - File operations (copy, move, delete, mkdir, rename)
-├── editor.h/c   - Text viewer/editor (F3/F4)
-├── util.h/c     - String/path utilities
-└── config.h/c   - INI configuration parser
+
+## Hardware Constants
+
+```c
+// VRAM (screen.h)
+#define VRAM_SEG    0xF000   // Video RAM segment
+#define CRTC_SEG    0xE800   // CRT controller segment
+
+// Screen layout
+#define SCR_WIDTH   80
+#define SCR_HEIGHT  25
+#define PANEL_WIDTH 40
+#define PANEL_HEIGHT 19      // Visible file rows
+
+// Attributes
+#define ATTR_NORMAL     0x00
+#define ATTR_REVERSE    0x80  // Highlight
+#define ATTR_DIM        0x40
+#define ATTR_UNDERLINE  0x20
 ```
 
-## Memory Tiers
-The program scales based on available memory:
+## Victor 9000 Key Translation
 
-| Resource          | Tiny (128KB) | Low (256KB) | Medium (384KB) | High (512KB+) |
-|-------------------|--------------|-------------|----------------|---------------|
-| Files per panel   | 64           | 256         | 512            | 1024+         |
-| Editor buffer     | 4KB          | 16KB        | 32KB           | 64KB          |
-| Copy buffer       | 256B         | 512B        | 2KB            | 8KB           |
-| Editor max lines  | 128          | 512         | 1024           | 2048          |
+The Victor 9000 uses different scan codes than IBM PC. Translation in `keyboard.c`:
 
-## Reference Files
-- `root/Victor9000-Development-Private/asm86lib` - Low-level library reference
-- `root/Victor9000-Development-Private/old/igc` - Old nasm version
+```c
+// Victor F-keys (0xF1-0xFA) -> IBM AT codes (0x3B-0x44)
+// Victor PgUp (0xE4) -> IBM PgUp (0x49)
+// Victor PgDn (0xE5) -> IBM PgDn (0x51)
+```
+
+## Common Patterns
+
+### Screen Updates
+Always use incremental updates via `ui_draw_panel_row()` rather than full redraws:
+```c
+// Good: Update only affected row
+ui_draw_panel_row(panel, old_cursor);
+ui_draw_panel_row(panel, panel->cursor);
+
+// Avoid: Full panel redraw (slow)
+ui_draw_panel(panel);
+```
+
+### Far Pointer Usage
+Large arrays must use far pointers:
+```c
+FileEntry __far *files = (FileEntry __far *)mem_alloc_far(count * sizeof(FileEntry));
+// Access via far pointer
+files[i].name;
+```
+
+### Dialog Overlay Pattern
+Save screen region before dialog, restore after:
+```c
+uint16_t __far *saved = dialog_save_region(x, y, w, h);
+// Draw dialog...
+// Handle input...
+dialog_restore_region(saved, x, y, w, h);
+mem_free_far(saved);
+```
+
+## Testing
+
+Run in MAME Victor 9000 emulator:
+```bash
+make deploy   # Copy to disk image
+# Then launch MAME with victor9k driver
+```
+
+Use `keytest.exe` to debug keyboard input issues.
+
+## Common Issues
+
+1. **Linker errors**: Check far pointer usage - compact model requires explicit `__far`
+2. **Screen corruption**: Verify VRAM segment (0xF000) and attribute bytes
+3. **Keyboard not responding**: Check Victor 9000 key translation in `keyboard.c`
+4. **Out of memory**: Reduce buffer sizes or check tier detection in `mem.c`
+5. **Files not showing**: Verify DOS INT 21h calls in `dosapi.c`, check error returns
+
+## Reference
+
+- `../asm86lib` - Low-level library reference (if available)
+- Victor 9000 Technical Reference Manual
+- DOS INT 21h function reference
+- Open Watcom v2 C Library Reference (16-bit DOS)
