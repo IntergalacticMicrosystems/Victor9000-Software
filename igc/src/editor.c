@@ -40,17 +40,23 @@ bool_t editor_init(void)
             g_editor.buf_size = EDIT_BUF_MEDIUM;
             g_editor.max_lines = EDIT_LINES_MEDIUM;
             break;
-        default:
+        case MEM_LOW:
             g_editor.buf_size = EDIT_BUF_LOW;
             g_editor.max_lines = EDIT_LINES_LOW;
+            break;
+        case MEM_TINY:
+        default:
+            g_editor.buf_size = EDIT_BUF_TINY;
+            g_editor.max_lines = EDIT_LINES_TINY;
             break;
     }
 
     /* Allocate text buffer */
     g_editor.buffer = (char __far *)mem_alloc(g_editor.buf_size);
     if (g_editor.buffer == (char __far *)0) {
-        /* Try smaller buffer */
-        g_editor.buf_size = EDIT_BUF_LOW;
+        /* Try smallest buffer */
+        g_editor.buf_size = EDIT_BUF_TINY;
+        g_editor.max_lines = EDIT_LINES_TINY;
         g_editor.buffer = (char __far *)mem_alloc(g_editor.buf_size);
         if (g_editor.buffer == (char __far *)0) {
             return FALSE;

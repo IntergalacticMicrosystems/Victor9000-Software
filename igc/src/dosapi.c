@@ -12,28 +12,44 @@
  * Critical Error Handler (INT 24h)
  * Used to suppress "Abort, Retry, Fail?" prompts when accessing drives
  * without media (floppy drives with no disk, etc.)
+ *
+ * DOS 2.x only supports: 0=Ignore, 1=Retry, 2=Abort
+ * DOS 3.1+ adds: 3=Fail (returns error to caller)
+ *
+ * On DOS 2.x, we don't install a handler - let DOS show "Abort, Retry?"
+ * On DOS 3.x+, we install a handler that returns Fail (3).
  *---------------------------------------------------------------------------*/
 static void (__interrupt __far *old_int24)(void) = (void (__interrupt __far *)(void))0;
 static uint8_t crit_handler_installed = 0;
+static uint8_t dos_major_version = 0;
 
-/* Critical error handler - set AL=3 (fail) and return
- * Using simple __interrupt handler that modifies AX on stack.
- * Stack layout from disassembly: AX is saved at [BP+22] (0x16)
+/* Critical error handler for DOS 3.x+ - set AL=3 (fail) and return
+ * Stack layout: AX is saved at [BP+22] (0x16)
  */
 static void __interrupt __far crit_error_handler(void)
 {
     /* Set AL=3 to tell DOS to fail the call */
     _asm {
-        mov word ptr [bp+22], 3  ; Modify saved AX on stack (AL=3)
+        mov word ptr [bp+22], 3
     }
 }
 
 /*---------------------------------------------------------------------------
  * dos_install_crit_handler - Install our critical error handler
+ * Only installs on DOS 3.x+ where Fail response is supported.
  *---------------------------------------------------------------------------*/
 void dos_install_crit_handler(void)
 {
-    if (!crit_handler_installed) {
+    /* Get DOS version if we haven't yet */
+    if (dos_major_version == 0) {
+        union REGS regs;
+        regs.h.ah = 0x30;
+        int86(0x21, &regs, &regs);
+        dos_major_version = regs.h.al;
+    }
+
+    /* Only install on DOS 3.x+ where Fail (AL=3) is supported */
+    if (dos_major_version >= 3 && !crit_handler_installed) {
         old_int24 = _dos_getvect(0x24);
         _dos_setvect(0x24, (void (__interrupt __far *)(void))crit_error_handler);
         crit_handler_installed = 1;
@@ -50,6 +66,21 @@ void dos_restore_crit_handler(void)
         old_int24 = (void (__interrupt __far *)(void))0;
         crit_handler_installed = 0;
     }
+}
+
+/*---------------------------------------------------------------------------
+ * dos_get_version - Get DOS version
+ * Returns major version in low byte, minor in high byte
+ *---------------------------------------------------------------------------*/
+uint16_t dos_get_version(void)
+{
+    union REGS regs;
+
+    regs.h.ah = 0x30;
+    int86(0x21, &regs, &regs);
+
+    /* AL = major version, AH = minor version */
+    return regs.x.ax;
 }
 
 /*---------------------------------------------------------------------------
@@ -127,40 +158,28 @@ bool_t dos_is_drive_valid(uint8_t drive)
 
 /*---------------------------------------------------------------------------
  * dos_is_drive_ready - Check if drive has media (is ready)
- * Uses IOCTL to check drive status without full disk access.
  * Uses critical error handler to suppress "Abort, Retry, Fail?" prompts.
+ * Note: IOCTL method only works on DOS 3.0+, so we use get-current-directory
+ * which works on all DOS versions.
  *---------------------------------------------------------------------------*/
 bool_t dos_is_drive_ready(uint8_t drive)
 {
     union REGS regs;
     struct SREGS sregs;
+    char buf[68];
 
-    /* Install critical error handler to suppress prompts */
+    /* Install critical error handler to suppress prompts (DOS 3.x+ only)
+     * On DOS 2.x, user will see "Abort, Retry?" if drive not ready */
     dos_install_crit_handler();
 
-    /* First try: IOCTL - Check if block device is remote (INT 21h AX=4409h)
-     * This is a quick check that doesn't require disk access */
-    regs.x.ax = 0x4409;
-    regs.h.bl = drive + 1;  /* 1=A, 2=B, etc. */
-    int86(0x21, &regs, &regs);
-
-    if (regs.x.cflag) {
-        /* IOCTL failed - drive not accessible */
-        dos_restore_crit_handler();
-        return FALSE;
-    }
-
-    /* Second check: Try to get current directory for the drive
-     * This requires the drive to have media but is faster than disk free space */
-    {
-        char buf[68];
-        segread(&sregs);
-        regs.h.ah = 0x47;           /* Get current directory */
-        regs.h.dl = drive + 1;      /* 1=A, 2=B, etc. */
-        regs.x.si = FP_OFF(buf);
-        sregs.ds = FP_SEG(buf);
-        int86x(0x21, &regs, &regs, &sregs);
-    }
+    /* Use get current directory for the drive - works on DOS 2.x and 3.x
+     * This requires the drive to have media */
+    segread(&sregs);
+    regs.h.ah = 0x47;           /* Get current directory */
+    regs.h.dl = drive + 1;      /* 1=A, 2=B, etc. */
+    regs.x.si = FP_OFF(buf);
+    sregs.ds = FP_SEG(buf);
+    int86x(0x21, &regs, &regs, &sregs);
 
     /* Restore original critical error handler */
     dos_restore_crit_handler();

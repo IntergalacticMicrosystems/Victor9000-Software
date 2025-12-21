@@ -35,15 +35,19 @@ bool_t fops_init(void)
         case MEM_MEDIUM:
             g_copy_buf_size = COPY_BUF_MEDIUM;
             break;
-        default:
+        case MEM_LOW:
             g_copy_buf_size = COPY_BUF_LOW;
+            break;
+        case MEM_TINY:
+        default:
+            g_copy_buf_size = COPY_BUF_TINY;
             break;
     }
 
     g_copy_buf = (uint8_t __far *)mem_alloc(g_copy_buf_size);
     if (g_copy_buf == (uint8_t __far *)0) {
-        /* Try smaller buffer */
-        g_copy_buf_size = COPY_BUF_LOW;
+        /* Try smallest buffer */
+        g_copy_buf_size = COPY_BUF_TINY;
         g_copy_buf = (uint8_t __far *)mem_alloc(g_copy_buf_size);
     }
 

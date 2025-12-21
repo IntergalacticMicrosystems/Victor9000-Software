@@ -58,34 +58,42 @@ static void handle_enter(void)
 static void handle_navigation(uint8_t code)
 {
     Panel *p = panel_get_active();
+    uint16_t old_cursor = p->cursor;
+    uint16_t old_top = p->top;
 
     switch (code) {
         case KEY_UP:
             panel_cursor_up(p);
-            break;
+            ui_update_cursor(old_cursor, old_top);
+            return;
         case KEY_DOWN:
             panel_cursor_down(p);
-            break;
+            ui_update_cursor(old_cursor, old_top);
+            return;
         case KEY_HOME:
             panel_cursor_home(p);
-            break;
+            ui_update_cursor(old_cursor, old_top);
+            return;
         case KEY_END:
             panel_cursor_end(p);
-            break;
+            ui_update_cursor(old_cursor, old_top);
+            return;
         case KEY_PGUP:
             panel_page_up(p);
-            break;
+            ui_update_cursor(old_cursor, old_top);
+            return;
         case KEY_PGDN:
             panel_page_down(p);
-            break;
+            ui_update_cursor(old_cursor, old_top);
+            return;
         case KEY_LEFT:
             panel_go_parent(p);
-            break;
+            g_need_redraw = TRUE;
+            return;
         case KEY_RIGHT:
             handle_enter();
-            break;
+            return;
     }
-    g_need_redraw = TRUE;
 }
 
 /*---------------------------------------------------------------------------
@@ -240,10 +248,15 @@ static void handle_key(KeyEvent *key)
                 break;
 
             case KEY_SPACE:
-                p = panel_get_active();
-                panel_toggle_selection(p);
-                panel_cursor_down(p);
-                g_need_redraw = TRUE;
+                {
+                    uint16_t old_cursor, old_top;
+                    p = panel_get_active();
+                    old_cursor = p->cursor;
+                    old_top = p->top;
+                    panel_toggle_selection(p);
+                    panel_cursor_down(p);
+                    ui_update_cursor(old_cursor, old_top);
+                }
                 break;
 
             case KEY_ESC:

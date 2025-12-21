@@ -11,10 +11,12 @@
 /*---------------------------------------------------------------------------
  * Editor Buffer Sizes (based on memory tier)
  *---------------------------------------------------------------------------*/
+#define EDIT_BUF_TINY     4096      /* Tiny memory: 4KB */
 #define EDIT_BUF_LOW      16384     /* Low memory: 16KB */
 #define EDIT_BUF_MEDIUM   32768     /* Medium memory: 32KB */
 #define EDIT_BUF_HIGH     65535     /* High memory: 64KB (max for 16-bit) */
 
+#define EDIT_LINES_TINY   128       /* Tiny memory: 128 lines max */
 #define EDIT_LINES_LOW    512       /* Low memory: 512 lines max */
 #define EDIT_LINES_MEDIUM 1024      /* Medium memory: 1024 lines */
 #define EDIT_LINES_HIGH   2048      /* High memory: 2048 lines */

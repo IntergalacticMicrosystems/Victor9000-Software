@@ -175,31 +175,43 @@ typedef uint8_t bool_t;
 /*---------------------------------------------------------------------------
  * Memory Tiers
  *---------------------------------------------------------------------------*/
-#define MEM_LOW         0       /* < 300KB: minimal config */
-#define MEM_MEDIUM      1       /* 300-450KB: standard config */
-#define MEM_HIGH        2       /* > 450KB: extended config */
+#define MEM_TINY        0       /* < 192KB: 128KB systems */
+#define MEM_LOW         1       /* 192-300KB: minimal config */
+#define MEM_MEDIUM      2       /* 300-450KB: standard config */
+#define MEM_HIGH        3       /* > 450KB: extended config */
 
-/* Tier thresholds (in KB) */
-#define MEM_LOW_THRESHOLD       300
-#define MEM_MEDIUM_THRESHOLD    450
+/* Tier thresholds (in KB of free memory after DOS/program loaded) */
+#define MEM_TINY_THRESHOLD      0       /* Any memory at all */
+#define MEM_LOW_THRESHOLD       64      /* 64KB free = ~192KB total */
+#define MEM_MEDIUM_THRESHOLD    128     /* 128KB free = ~300KB total */
+#define MEM_HIGH_THRESHOLD      200     /* 200KB free = ~450KB total */
 
 /*---------------------------------------------------------------------------
  * Buffer Size Limits by Memory Tier
  *---------------------------------------------------------------------------*/
 /* Files per panel */
+#define FILES_PER_PANEL_TINY    64
 #define FILES_PER_PANEL_LOW     256
 #define FILES_PER_PANEL_MEDIUM  512
 #define FILES_PER_PANEL_HIGH    1024
 
 /* Editor buffer (bytes) */
+#define EDITOR_BUF_TINY         4096L       /* 4KB */
 #define EDITOR_BUF_LOW          16384L      /* 16KB */
 #define EDITOR_BUF_MEDIUM       32768L      /* 32KB */
 #define EDITOR_BUF_HIGH         65536L      /* 64KB */
 
 /* Copy buffer (bytes) */
+#define COPY_BUF_TINY           256
 #define COPY_BUF_LOW            512
 #define COPY_BUF_MEDIUM         2048
 #define COPY_BUF_HIGH           8192
+
+/* Editor max lines */
+#define EDITOR_LINES_TINY       128
+#define EDITOR_LINES_LOW        512
+#define EDITOR_LINES_MEDIUM     1024
+#define EDITOR_LINES_HIGH       2048
 
 /*---------------------------------------------------------------------------
  * Path and Filename Limits

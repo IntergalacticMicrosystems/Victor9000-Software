@@ -35,6 +35,12 @@ void ui_draw_panels(void);
 /* Draw a single panel */
 void ui_draw_panel(Panel *p, uint8_t x_offset, bool_t active);
 
+/* Draw a single row in a panel (for efficient cursor updates) */
+void ui_draw_panel_row(Panel *p, uint8_t x_offset, bool_t active, uint16_t file_idx);
+
+/* Update cursor display efficiently (redraws only old and new cursor rows) */
+void ui_update_cursor(uint16_t old_cursor, uint16_t old_top);
+
 /* Draw panel path in title bar */
 void ui_draw_panel_path(Panel *p, uint8_t x_offset, bool_t active);
 

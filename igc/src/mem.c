@@ -14,6 +14,7 @@ MemState g_mem;
 
 /* Tier names for display */
 static const char *tier_names[] = {
+    "TINY (128KB)",
     "LOW (256KB)",
     "MEDIUM (384KB)",
     "HIGH (512KB+)"
@@ -56,21 +57,26 @@ void mem_init(void)
     g_mem.free_kb = g_mem.total_kb;
 
     /* Determine tier based on available memory */
-    if (g_mem.total_kb >= MEM_MEDIUM_THRESHOLD) {
+    if (g_mem.total_kb >= MEM_HIGH_THRESHOLD) {
         g_mem.tier = MEM_HIGH;
         g_mem.files_per_panel = FILES_PER_PANEL_HIGH;
         g_mem.editor_buf_size = EDITOR_BUF_HIGH;
         g_mem.copy_buf_size = COPY_BUF_HIGH;
-    } else if (g_mem.total_kb >= MEM_LOW_THRESHOLD) {
+    } else if (g_mem.total_kb >= MEM_MEDIUM_THRESHOLD) {
         g_mem.tier = MEM_MEDIUM;
         g_mem.files_per_panel = FILES_PER_PANEL_MEDIUM;
         g_mem.editor_buf_size = EDITOR_BUF_MEDIUM;
         g_mem.copy_buf_size = COPY_BUF_MEDIUM;
-    } else {
+    } else if (g_mem.total_kb >= MEM_LOW_THRESHOLD) {
         g_mem.tier = MEM_LOW;
         g_mem.files_per_panel = FILES_PER_PANEL_LOW;
         g_mem.editor_buf_size = EDITOR_BUF_LOW;
         g_mem.copy_buf_size = COPY_BUF_LOW;
+    } else {
+        g_mem.tier = MEM_TINY;
+        g_mem.files_per_panel = FILES_PER_PANEL_TINY;
+        g_mem.editor_buf_size = EDITOR_BUF_TINY;
+        g_mem.copy_buf_size = COPY_BUF_TINY;
     }
 }
 

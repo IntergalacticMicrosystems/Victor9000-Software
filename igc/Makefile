@@ -49,7 +49,20 @@ CFLAGS = -0 -mc -s -os -d0 -w4 -e25 -zq -bt=dos -fpc -j -i=$(SRCDIR)
 #-------------------------------------------------------------------------------
 # Source and Object Files
 #-------------------------------------------------------------------------------
-SRCS = $(wildcard $(SRCDIR)/*.c)
+# Explicitly list sources to avoid including test programs like keytest.c
+SRCS = $(SRCDIR)/main.c \
+       $(SRCDIR)/mem.c \
+       $(SRCDIR)/screen.c \
+       $(SRCDIR)/keyboard.c \
+       $(SRCDIR)/dosapi.c \
+       $(SRCDIR)/panel.c \
+       $(SRCDIR)/ui.c \
+       $(SRCDIR)/util.c \
+       $(SRCDIR)/dialog.c \
+       $(SRCDIR)/fileops.c \
+       $(SRCDIR)/editor.c \
+       $(SRCDIR)/config.c
+
 OBJS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.obj,$(SRCS))
 
 #-------------------------------------------------------------------------------
@@ -86,6 +99,7 @@ $(OBJDIR)/%.obj: $(SRCDIR)/%.c | dirs
 clean:
 	rm -f $(OBJDIR)/*.obj $(OBJDIR)/*.lnk
 	rm -f $(BINDIR)/$(TARGET).exe $(BINDIR)/$(TARGET).map
+	rm -f $(BINDIR)/keytest.exe
 
 distclean: clean
 	rm -rf $(OBJDIR) $(BINDIR)
@@ -129,13 +143,30 @@ $(OBJDIR)/config.obj: $(SRCDIR)/config.c $(SRCDIR)/config.h $(SRCDIR)/igc.h \
                       $(SRCDIR)/panel.h $(SRCDIR)/dosapi.h $(SRCDIR)/util.h
 
 #-------------------------------------------------------------------------------
+# Keytest utility (separate build)
+#-------------------------------------------------------------------------------
+
+.PHONY: keytest
+
+keytest: dirs $(BINDIR)/keytest.exe
+	@echo "Build complete: $(BINDIR)/keytest.exe"
+
+$(BINDIR)/keytest.exe: $(OBJDIR)/keytest.obj
+	@echo "Linking keytest.exe..."
+	$(LD) NAME $@ SYSTEM dos OPTION quiet FILE $(OBJDIR)/keytest.obj
+
+$(OBJDIR)/keytest.obj: $(SRCDIR)/keytest.c | dirs
+	@echo "Compiling keytest.c..."
+	$(CC) $(CFLAGS) -fo=$@ $<
+
+#-------------------------------------------------------------------------------
 # Deploy to MAME disk image
 #-------------------------------------------------------------------------------
 
 MAME_DIR ?= /root/bldmame1
-DISK_IMG ?= $(MAME_DIR)/vichd.img
+DISK_IMG ?= $(MAME_DIR)/vichd31.img
 DEST_PARTITION ?= 1
-DEST_DIR ?= TEMP
+DEST_DIR ?= 
 
 .PHONY: deploy
 

@@ -171,6 +171,70 @@ void ui_draw_fkey_bar(void)
 }
 
 /*---------------------------------------------------------------------------
+ * ui_draw_panel_row - Draw a single row in a panel
+ *---------------------------------------------------------------------------*/
+void ui_draw_panel_row(Panel *p, uint8_t x_offset, bool_t active, uint16_t file_idx)
+{
+    uint8_t row;
+    FileEntry __far *f;
+    char size_buf[10];
+    char date_buf[10];
+    uint8_t attr;
+    bool_t is_cursor;
+
+    /* Check if file_idx is visible */
+    if (file_idx < p->top || file_idx >= p->top + PANEL_HEIGHT) {
+        return;
+    }
+
+    row = ROW_FILES_START + (file_idx - p->top);
+
+    /* Clear the row first */
+    scr_fill_rect(x_offset + 1, row, INNER_WIDTH, 1, ' ', ATTR_DIM);
+
+    if (file_idx >= p->files.count) {
+        return;
+    }
+
+    f = panel_get_file(p, file_idx);
+    if (f == (FileEntry __far *)0) return;
+
+    is_cursor = (file_idx == p->cursor && active);
+
+    /* Only cursor row gets reverse video */
+    if (is_cursor) {
+        attr = ATTR_DIM_REV;
+        scr_fill_rect(x_offset + 1, row, INNER_WIDTH, 1, ' ', attr);
+    } else {
+        attr = ATTR_DIM;
+    }
+
+    /* Draw selection star (if selected and not cursor) */
+    if (f->selected && !is_cursor) {
+        scr_putc_xy(x_offset + 1, row, '*', ATTR_DIM);
+    }
+
+    /* Draw name (directories with angle brackets) */
+    if (file_is_dir(f)) {
+        char dir_name[16];
+        dir_name[0] = '<';
+        str_copy_n(&dir_name[1], f->name, 12);
+        str_copy(dir_name + str_len(dir_name), ">");
+        scr_puts_n_xy(x_offset + 2, row, dir_name, 14, attr);
+    } else {
+        scr_puts_n_xy(x_offset + 2, row, f->name, 14, attr);
+    }
+
+    /* Draw size */
+    file_format_size(f, size_buf);
+    scr_puts_n_xy(x_offset + 17, row, size_buf, 8, attr);
+
+    /* Draw date */
+    file_format_date(f, date_buf);
+    scr_puts_n_xy(x_offset + 26, row, date_buf, 12, attr);
+}
+
+/*---------------------------------------------------------------------------
  * ui_draw_panel - Draw a single panel
  *---------------------------------------------------------------------------*/
 void ui_draw_panel(Panel *p, uint8_t x_offset, bool_t active)
@@ -178,10 +242,6 @@ void ui_draw_panel(Panel *p, uint8_t x_offset, bool_t active)
     uint16_t i;
     uint16_t file_idx;
     uint8_t row;
-    FileEntry __far *f;
-    char size_buf[10];
-    char date_buf[10];
-    uint8_t attr;
 
     /* Clear panel area */
     for (row = ROW_FILES_START; row <= ROW_FILES_END; row++) {
@@ -191,46 +251,12 @@ void ui_draw_panel(Panel *p, uint8_t x_offset, bool_t active)
     /* Draw files */
     for (i = 0; i < PANEL_HEIGHT; i++) {
         file_idx = p->top + i;
-        row = ROW_FILES_START + i;
 
         if (file_idx >= p->files.count) {
             break;
         }
 
-        f = panel_get_file(p, file_idx);
-        if (f == (FileEntry __far *)0) break;
-
-        /* Determine attribute for entire row */
-        if (file_idx == p->cursor && active) {
-            attr = ATTR_DIM_REV;
-            /* Fill entire row with highlight */
-            scr_fill_rect(x_offset + 1, row, INNER_WIDTH, 1, ' ', attr);
-        } else if (f->selected) {
-            attr = ATTR_DIM_REV;
-            /* Fill entire row with selection highlight */
-            scr_fill_rect(x_offset + 1, row, INNER_WIDTH, 1, ' ', attr);
-        } else {
-            attr = ATTR_DIM;
-        }
-
-        /* Draw name (directories with angle brackets) */
-        if (file_is_dir(f)) {
-            char dir_name[16];
-            dir_name[0] = '<';
-            str_copy_n(&dir_name[1], f->name, 12);
-            str_copy(dir_name + str_len(dir_name), ">");
-            scr_puts_n_xy(x_offset + 2, row, dir_name, 14, attr);
-        } else {
-            scr_puts_n_xy(x_offset + 2, row, f->name, 14, attr);
-        }
-
-        /* Draw size */
-        file_format_size(f, size_buf);
-        scr_puts_n_xy(x_offset + 17, row, size_buf, 8, attr);
-
-        /* Draw date */
-        file_format_date(f, date_buf);
-        scr_puts_n_xy(x_offset + 26, row, date_buf, 12, attr);
+        ui_draw_panel_row(p, x_offset, active, file_idx);
     }
 
     /* Show truncation indicator */
@@ -257,6 +283,27 @@ void ui_draw_panels(void)
 {
     ui_draw_panel(&g_left_panel, LEFT_X, (g_active_panel == 0));
     ui_draw_panel(&g_right_panel, RIGHT_X, (g_active_panel == 1));
+}
+
+/*---------------------------------------------------------------------------
+ * ui_update_cursor - Efficient cursor update (redraws only affected rows)
+ *---------------------------------------------------------------------------*/
+void ui_update_cursor(uint16_t old_cursor, uint16_t old_top)
+{
+    Panel *p = panel_get_active();
+    uint8_t x_offset = (g_active_panel == 0) ? LEFT_X : RIGHT_X;
+
+    /* If view scrolled, need full panel redraw */
+    if (old_top != p->top) {
+        ui_draw_panel(p, x_offset, TRUE);
+        return;
+    }
+
+    /* Just redraw old and new cursor rows */
+    if (old_cursor != p->cursor) {
+        ui_draw_panel_row(p, x_offset, TRUE, old_cursor);
+        ui_draw_panel_row(p, x_offset, TRUE, p->cursor);
+    }
 }
 
 /*---------------------------------------------------------------------------

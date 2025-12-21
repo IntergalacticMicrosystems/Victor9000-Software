@@ -1,0 +1,5 @@
+{
+  "system": "victor9k",
+  "executable": "bin/igc.exe",
+  "build-command": "make"
+}

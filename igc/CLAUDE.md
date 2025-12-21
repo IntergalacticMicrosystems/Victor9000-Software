@@ -6,8 +6,9 @@ Inspired by Midnight Commander.
 Always update the documentation when changes are made.
 
 ## Key Features
-- Dynamic memory management (scales from 256KB to 512KB+ systems)
+- Dynamic memory management (scales from 128KB to 512KB+ systems)
 - Direct VRAM access for fast screen updates
+- Optimized cursor movement (only redraws affected rows, not entire panels)
 - Victor 9000 keyboard translation (F-keys, arrow keys)
 - Support for large directories (500+ files) and large files in editor
 - INI configuration file for saving/loading panel state
@@ -29,7 +30,7 @@ Output: bin/igc.exe (~25KB)
 - **Arrows**: Navigate files
 - **Enter**: Enter directory or view file
 - **Backspace**: Go to parent directory
-- **Space**: Toggle file selection
+- **Space**: Toggle file selection (selected files marked with `*`)
 - **ESC/Q**: Quit
 
 ### Function Keys
@@ -64,13 +65,13 @@ src/
 ## Memory Tiers
 The program scales based on available memory:
 
-| Resource          | Low (256KB) | Medium (384KB) | High (512KB+) |
-|-------------------|-------------|----------------|---------------|
-| Files per panel   | 256         | 512            | 1024+         |
-| Editor buffer     | 16KB        | 32KB           | 64KB          |
-| Copy buffer       | 512B        | 2KB            | 8KB           |
-| Editor max lines  | 512         | 1024           | 2048          |
+| Resource          | Tiny (128KB) | Low (256KB) | Medium (384KB) | High (512KB+) |
+|-------------------|--------------|-------------|----------------|---------------|
+| Files per panel   | 64           | 256         | 512            | 1024+         |
+| Editor buffer     | 4KB          | 16KB        | 32KB           | 64KB          |
+| Copy buffer       | 256B         | 512B        | 2KB            | 8KB           |
+| Editor max lines  | 128          | 512         | 1024           | 2048          |
 
 ## Reference Files
-- `../asm86lib` - Low-level library reference
-- `../old/igc` - Old nasm version
+- `root/Victor9000-Development-Private/asm86lib` - Low-level library reference
+- `root/Victor9000-Development-Private/old/igc` - Old nasm version
