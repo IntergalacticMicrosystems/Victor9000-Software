@@ -536,9 +536,10 @@ static void insert_char(char c)
 static void insert_newline(void)
 {
     if (g_editor.readonly) return;
-    if (g_editor.buf_used >= g_editor.buf_size - 1) return;
+    if (g_editor.buf_used >= g_editor.buf_size - 2) return;
     if (g_editor.total_lines >= g_editor.max_lines - 1) return;
 
+    insert_char('\r');
     insert_char('\n');
 
     g_editor.cursor_line++;
@@ -555,17 +556,25 @@ static void delete_char(void)
 {
     uint16_t offset;
     uint32_t i;
+    uint16_t del_count = 1;
 
     if (g_editor.readonly) return;
 
     offset = get_cursor_offset();
     if (offset >= g_editor.buf_used) return;
 
-    /* Shift buffer contents left */
-    for (i = offset; i < g_editor.buf_used - 1; i++) {
-        g_editor.buffer[i] = g_editor.buffer[i + 1];
+    /* Handle CRLF as a unit - if deleting CR followed by LF, delete both */
+    if (g_editor.buffer[offset] == '\r' &&
+        offset + 1 < g_editor.buf_used &&
+        g_editor.buffer[offset + 1] == '\n') {
+        del_count = 2;
     }
-    g_editor.buf_used--;
+
+    /* Shift buffer contents left */
+    for (i = offset; i < g_editor.buf_used - del_count; i++) {
+        g_editor.buffer[i] = g_editor.buffer[i + del_count];
+    }
+    g_editor.buf_used -= del_count;
 
     /* Update line offsets */
     parse_lines();
