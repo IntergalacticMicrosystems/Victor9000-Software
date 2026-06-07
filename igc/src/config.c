@@ -8,9 +8,52 @@
 #include "util.h"
 
 /*---------------------------------------------------------------------------
- * Configuration file name
+ * Configuration file path
+ *
+ * Defaults to the bare filename (resolved against the current working
+ * directory). config_init_path() rewrites this to sit next to the executable.
  *---------------------------------------------------------------------------*/
-static const char *CONFIG_FILE = "IGC.INI";
+static char config_path[MAX_PATH_LEN] = "IGC.INI";
+
+/*---------------------------------------------------------------------------
+ * config_init_path - Point IGC.INI at the executable's directory
+ *
+ * On DOS 3.0+ the C runtime supplies argv[0] as the fully-qualified path of
+ * the running program (e.g. "A:\TOOLS\IGC.EXE"). We strip the filename and
+ * append "IGC.INI" so the config file lives next to the EXE regardless of the
+ * current working directory. If no directory information is available, the
+ * default "IGC.INI" (current working directory) is left in place.
+ *---------------------------------------------------------------------------*/
+void config_init_path(const char *exe_path)
+{
+    const char *name;
+    uint16_t dir_len;
+
+    if (exe_path == (const char *)0 || *exe_path == '\0') {
+        return;
+    }
+
+    /* path_get_filename returns a pointer to the filename portion; the bytes
+     * before it (including any trailing '\' or drive ':') are the directory. */
+    name = path_get_filename(exe_path);
+    dir_len = (uint16_t)(name - exe_path);
+
+    /* No directory prefix at all (e.g. DOS < 3.0 gives just a name) -> keep
+     * the current-working-directory default. */
+    if (dir_len == 0) {
+        return;
+    }
+
+    /* Make sure the directory prefix + "IGC.INI" fits in the buffer. */
+    if (dir_len + str_len("IGC.INI") + 1 > MAX_PATH_LEN) {
+        return;
+    }
+
+    /* str_copy_n copies at most maxlen-1 chars, so pass dir_len+1 to keep all
+     * dir_len directory bytes; it null-terminates at index dir_len. */
+    str_copy_n(config_path, exe_path, dir_len + 1);
+    str_copy(config_path + dir_len, "IGC.INI");
+}
 
 /*---------------------------------------------------------------------------
  * skip_whitespace - Skip whitespace in string
@@ -125,7 +168,7 @@ bool_t config_load(Config *cfg)
     cfg->active_panel = 0;
 
     /* Try to open config file */
-    h = dos_open(CONFIG_FILE, DOS_OPEN_READ);
+    h = dos_open(config_path, DOS_OPEN_READ);
     if (h < 0) {
         return FALSE;
     }
@@ -166,7 +209,7 @@ bool_t config_save(const Config *cfg)
     uint16_t len;
     int16_t written;
 
-    h = dos_create(CONFIG_FILE, 0);
+    h = dos_create(config_path, 0);
     if (h < 0) {
         return FALSE;
     }

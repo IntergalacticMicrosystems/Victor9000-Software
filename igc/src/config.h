@@ -23,6 +23,10 @@ typedef struct {
  * Configuration Functions
  *---------------------------------------------------------------------------*/
 
+/* Set the directory for IGC.INI based on the executable path (argv[0]).
+ * Falls back to the current working directory if exe_path is empty/NULL. */
+void config_init_path(const char *exe_path);
+
 /* Load configuration from IGC.INI */
 bool_t config_load(Config *cfg);
 

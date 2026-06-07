@@ -298,10 +298,14 @@ static void main_loop(void)
 /*---------------------------------------------------------------------------
  * Main entry point
  *---------------------------------------------------------------------------*/
-int main(void)
+int main(int argc, char *argv[])
 {
     /* Initialize memory system */
     mem_init();
+
+    /* Point IGC.INI at the executable's directory (argv[0] is the full
+     * program path on DOS 3.0+); falls back to the CWD otherwise. */
+    config_init_path(argc > 0 ? argv[0] : (char *)0);
 
     /* Initialize screen */
     scr_init();
