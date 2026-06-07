@@ -369,6 +369,60 @@ static uint16_t count_selected_files(Panel *p)
 }
 
 /*---------------------------------------------------------------------------
+ * fops_copy_or_move - Ask Copy/Move once, then perform it
+ *
+ * Shows a single dialog: the filename when a single item is involved, or
+ * "<N> files" when more than one file is selected (the highlighted name is
+ * not shown). The chosen operation then runs with no further confirmation.
+ *---------------------------------------------------------------------------*/
+int fops_copy_or_move(void)
+{
+    Panel *src = panel_get_active();
+    FileEntry __far *single = (FileEntry __far *)0;
+    uint16_t selected = count_selected_files(src);
+    char label[40];
+    int op;
+
+    if (selected > 1) {
+        /* Multiple files: show the count, not a filename */
+        num_format(label, selected);
+        str_copy(label + str_len(label), " files");
+    } else {
+        /* Single item: the one selected file, or the cursor if none selected */
+        if (selected == 1) {
+            uint16_t i;
+            for (i = 0; i < src->files.count; i++) {
+                FileEntry __far *f = panel_get_file(src, i);
+                if (f != (FileEntry __far *)0 && f->selected) {
+                    single = f;
+                    break;
+                }
+            }
+        } else {
+            single = panel_get_cursor_file(src);
+        }
+
+        /* Nothing actionable (e.g. cursor on . or ..) */
+        if (single == (FileEntry __far *)0 ||
+            file_is_parent(single) ||
+            (single->name[0] == '.' && single->name[1] == '\0')) {
+            return FOPS_CANCEL;
+        }
+
+        str_copy_n(label, single->name, sizeof(label) - 1);
+    }
+
+    op = dlg_copy_or_move(label);
+    if (op == 'C') {
+        return fops_copy();
+    } else if (op == 'M') {
+        return fops_move();
+    }
+
+    return FOPS_CANCEL;
+}
+
+/*---------------------------------------------------------------------------
  * fops_copy - Copy selected files to other panel
  *---------------------------------------------------------------------------*/
 int fops_copy(void)
@@ -399,11 +453,6 @@ int fops_copy(void)
             return FOPS_CANCEL;
         }
 
-        /* Confirm single file copy */
-        if (dlg_copy_or_move(f->name) != 'C') {
-            return FOPS_CANCEL;
-        }
-
         build_src_path(src_panel, f, src_path);
         build_dst_path(dst_panel, f->name, dst_path);
 
@@ -416,16 +465,7 @@ int fops_copy(void)
             result = fops_copy_file(src_path, dst_path);
         }
     } else {
-        /* Copy all selected files */
-        char msg[40];
-        str_copy(msg, "Copy ");
-        num_format(msg + str_len(msg), selected);
-        str_copy(msg + str_len(msg), " files?");
-
-        if (dlg_confirm("Confirm Copy", msg) != DLG_YES) {
-            return FOPS_CANCEL;
-        }
-
+        /* Copy all selected files (already confirmed by fops_copy_or_move) */
         g_file_count = selected;
 
         for (i = 0; i < src_panel->files.count && result != FOPS_CANCEL; i++) {
@@ -489,11 +529,6 @@ int fops_move(void)
             return FOPS_CANCEL;
         }
 
-        /* Confirm single file move */
-        if (dlg_copy_or_move(f->name) != 'M') {
-            return FOPS_CANCEL;
-        }
-
         build_src_path(src_panel, f, src_path);
         build_dst_path(dst_panel, f->name, dst_path);
 
@@ -535,16 +570,7 @@ int fops_move(void)
             }
         }
     } else {
-        /* Move all selected files */
-        char msg[40];
-        str_copy(msg, "Move ");
-        num_format(msg + str_len(msg), selected);
-        str_copy(msg + str_len(msg), " files?");
-
-        if (dlg_confirm("Confirm Move", msg) != DLG_YES) {
-            return FOPS_CANCEL;
-        }
-
+        /* Move all selected files (already confirmed by fops_copy_or_move) */
         g_file_count = selected;
 
         for (i = 0; i < src_panel->files.count && result != FOPS_CANCEL; i++) {

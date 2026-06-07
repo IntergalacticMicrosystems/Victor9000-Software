@@ -34,7 +34,12 @@ bool_t fops_init(void);
 /* Shutdown file operations module */
 void fops_shutdown(void);
 
-/* F5: Copy selected files to other panel */
+/* F5: Ask Copy/Move once (filename for a single item, "N files" for many),
+ * then perform the chosen operation with no further confirmation. */
+/* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
+int fops_copy_or_move(void);
+
+/* Copy selected files to other panel */
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
 int fops_copy(void);
 

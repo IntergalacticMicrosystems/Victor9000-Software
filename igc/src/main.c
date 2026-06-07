@@ -174,20 +174,7 @@ static void handle_fkey(uint8_t fkey_num)
             break;
 
         case 5:     /* F5: Copy/Move */
-            {
-                Panel *cp = panel_get_active();
-                FileEntry __far *cf = panel_get_cursor_file(cp);
-                if (cf != (FileEntry __far *)0 &&
-                    !file_is_parent(cf) &&
-                    !(cf->name[0] == '.' && cf->name[1] == '\0')) {
-                    int op = dlg_copy_or_move(cf->name);
-                    if (op == 'C') {
-                        fops_copy();
-                    } else if (op == 'M') {
-                        fops_move();
-                    }
-                }
-            }
+            fops_copy_or_move();
             g_need_redraw = TRUE;
             ui_draw_fkey_bar();
             break;
