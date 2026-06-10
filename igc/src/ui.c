@@ -46,6 +46,15 @@ void ui_draw_frame(void)
     scr_hline(40, ROW_BOT_BORDER, 39, BOX_HORIZ, ATTR_DIM);
     scr_putc_xy(79, ROW_BOT_BORDER, BOX_BR, ATTR_DIM);
 
+    /* Build date in bottom border, right-aligned before the corner.
+     * __DATE__ expands to "Mmm dd yyyy" (11 chars). The right panel's
+     * file count only occupies cols 41-55, so this area is always clear. */
+    {
+        static const char build_date[] = "Built " __DATE__;
+        uint8_t dlen = (uint8_t)str_len(build_date);
+        scr_puts_xy((uint8_t)(78 - dlen), ROW_BOT_BORDER, build_date, ATTR_DIM);
+    }
+
     /* Clear rows 22-23 */
     scr_fill_rect(0, 22, 80, 1, ' ', ATTR_DIM);
     scr_fill_rect(0, ROW_STATUS, 80, 1, ' ', ATTR_DIM);
