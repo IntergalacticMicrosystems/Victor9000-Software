@@ -31,6 +31,12 @@ void str_copy(char *dst, const char *src)
 void str_copy_n(char *dst, const char *src, uint16_t maxlen)
 {
     uint16_t i = 0;
+
+    /* maxlen - 1 below underflows to an unbounded copy */
+    if (maxlen == 0) {
+        return;
+    }
+
     while (*src && i < maxlen - 1) {
         *dst++ = *src++;
         i++;

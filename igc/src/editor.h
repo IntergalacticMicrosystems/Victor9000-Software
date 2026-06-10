@@ -24,7 +24,7 @@
 /*---------------------------------------------------------------------------
  * Editor Display Constants
  *---------------------------------------------------------------------------*/
-#define EDIT_ROWS         22        /* Rows for editing (2-23) */
+#define EDIT_ROWS         22        /* Rows for editing (rows 1-22) */
 #define EDIT_COLS         78        /* Columns for editing (1-78) */
 #define EDIT_TOP_ROW      1         /* First row of edit area */
 #define EDIT_LEFT_COL     1         /* First column of edit area */
@@ -45,7 +45,8 @@ typedef struct {
     uint16_t left_col;              /* Left column for horizontal scroll */
     bool_t   modified;              /* TRUE if buffer modified */
     bool_t   readonly;              /* TRUE for view mode */
-    char     filename[80];          /* Current filename */
+    bool_t   truncated;             /* TRUE if file exceeded buffer at load */
+    char     filename[MAX_FULL_PATH]; /* Current filename */
 } Editor;
 
 /*---------------------------------------------------------------------------

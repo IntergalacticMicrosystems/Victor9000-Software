@@ -126,18 +126,8 @@ static void handle_fkey(uint8_t fkey_num)
                 Panel *vp = panel_get_active();
                 FileEntry __far *vf = panel_get_cursor_file(vp);
                 if (vf != (FileEntry __far *)0 && !file_is_dir(vf)) {
-                    char vpath[80];
-                    vpath[0] = 'A' + vp->drive;
-                    vpath[1] = ':';
-                    vpath[2] = '\\';
-                    if (vp->path[0] == '\\') {
-                        str_copy(&vpath[3], &vp->path[1]);
-                    } else if (vp->path[0] != '\0') {
-                        str_copy(&vpath[3], vp->path);
-                    } else {
-                        vpath[3] = '\0';
-                    }
-                    path_append(vpath, vf->name);
+                    char vpath[MAX_FULL_PATH];
+                    path_build(vpath, vp->drive, vp->path, vf->name);
                     editor_view(vpath);
                     g_need_redraw = TRUE;
                     ui_draw_frame();
@@ -152,18 +142,8 @@ static void handle_fkey(uint8_t fkey_num)
                 Panel *ep = panel_get_active();
                 FileEntry __far *ef = panel_get_cursor_file(ep);
                 if (ef != (FileEntry __far *)0 && !file_is_dir(ef)) {
-                    char epath[80];
-                    epath[0] = 'A' + ep->drive;
-                    epath[1] = ':';
-                    epath[2] = '\\';
-                    if (ep->path[0] == '\\') {
-                        str_copy(&epath[3], &ep->path[1]);
-                    } else if (ep->path[0] != '\0') {
-                        str_copy(&epath[3], ep->path);
-                    } else {
-                        epath[3] = '\0';
-                    }
-                    path_append(epath, ef->name);
+                    char epath[MAX_FULL_PATH];
+                    path_build(epath, ep->drive, ep->path, ef->name);
                     editor_edit(epath);
                     g_need_redraw = TRUE;
                     ui_draw_frame();
@@ -190,6 +170,12 @@ static void handle_fkey(uint8_t fkey_num)
             if (dlg_exit_confirm() == DLG_YES) {
                 g_running = FALSE;
             }
+            ui_draw_fkey_bar();
+            break;
+
+        case 8:     /* F8: Rename */
+            fops_rename();
+            g_need_redraw = TRUE;
             ui_draw_fkey_bar();
             break;
     }
@@ -283,6 +269,14 @@ static void main_loop(void)
 }
 
 /*---------------------------------------------------------------------------
+ * fatal_msg - Report a startup failure after the screen is restored
+ *---------------------------------------------------------------------------*/
+static void fatal_msg(const char *msg)
+{
+    dos_write(1, msg, str_len(msg));    /* handle 1 = stdout */
+}
+
+/*---------------------------------------------------------------------------
  * Main entry point
  *---------------------------------------------------------------------------*/
 int main(int argc, char *argv[])
@@ -306,7 +300,7 @@ int main(int argc, char *argv[])
     if (!panels_init()) {
         scr_cursor_on();
         scr_exit();
-        dos_exit(1);
+        fatal_msg("IGC: not enough memory for file lists\r\n");
         return 1;
     }
 
@@ -315,7 +309,7 @@ int main(int argc, char *argv[])
         panels_free();
         scr_cursor_on();
         scr_exit();
-        dos_exit(1);
+        fatal_msg("IGC: not enough memory for copy buffer\r\n");
         return 1;
     }
 
@@ -325,7 +319,7 @@ int main(int argc, char *argv[])
         panels_free();
         scr_cursor_on();
         scr_exit();
-        dos_exit(1);
+        fatal_msg("IGC: not enough memory for editor\r\n");
         return 1;
     }
 
@@ -364,7 +358,6 @@ int main(int argc, char *argv[])
     scr_cursor_on();
     scr_exit();
     mem_shutdown();
-    dos_exit(0);
 
     return 0;
 }

@@ -1,1 +1,5 @@
 igc/obj/
+igc/bin/keytest.exe
+*.map
+*.err
+*.lst

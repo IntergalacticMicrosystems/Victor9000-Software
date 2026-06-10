@@ -27,11 +27,13 @@
 |-----|--------|---------|
 | Tab | Switch between panels | |
 | Up/Down | Move cursor | |
+| Left/Right | Parent directory / enter directory | |
 | PgUp/PgDn | Scroll page | Word arrow keys |
-| Home/End | Jump to first/last file | ? |
+| Home/End | Jump to first/last file | |
 | Enter | Open directory or view file | |
 | Backspace | Go to parent directory | |
 | Space | Select/deselect file | |
+| Esc or Q | Quit | |
 
 ### Function Keys
 | Key | Action |
@@ -42,7 +44,8 @@
 | F4 | Edit file |
 | F5 | Copy/Move |
 | F6 | Delete |
-| F7 | Quit |
+| F7 | Quit (F10 also quits) |
+| F8 | Rename |
 
 ## Installation
 
@@ -58,7 +61,7 @@ make clean      # Remove build artifacts
 make deploy     # Deploy to MAME disk image
 ```
 
-Output: `bin/igc.exe` (~26KB)
+Output: `bin/igc.exe` (~30KB)
 
 ## System Requirements
 
@@ -68,13 +71,13 @@ Output: `bin/igc.exe` (~26KB)
 
 ### Memory Scaling
 
-The program automatically adapts to available RAM:
+The program automatically adapts to the free RAM detected at startup:
 
-| System Memory | Files per Panel | Editor Buffer |
-|---------------|-----------------|---------------|
-| 128KB | 64 | 4KB |
-| 256KB | 256 | 16KB |
-| 384KB | 512 | 32KB |
-| 512KB+ | 1024+ | 64KB |
+| Free Memory | Files per Panel | Editor Buffer |
+|-------------|-----------------|---------------|
+| < 64KB | 64 | 4KB |
+| 64-128KB | 256 | 16KB |
+| 128-200KB | 512 | 32KB |
+| > 200KB | 1024 | 64KB |
 
 

@@ -30,39 +30,6 @@ bool_t kbd_check(void)
 }
 
 /*---------------------------------------------------------------------------
- * get_raw_char - Get raw character from DOS (non-blocking)
- * Returns character or -1 if none available
- *---------------------------------------------------------------------------*/
-static int get_raw_char(void)
-{
-    union REGS regs;
-
-    /* DOS function 06h: Direct console I/O */
-    regs.h.ah = 0x06;
-    regs.h.dl = 0xFF;   /* Input mode */
-    int86(0x21, &regs, &regs);
-
-    /* ZF set means no character available */
-    /* Check if AL is 0 (which could mean no key or null char) */
-    /* We need to check the zero flag via flags register */
-    if (regs.x.cflag == 0 && regs.h.al != 0) {
-        return (int)(unsigned char)regs.h.al;
-    }
-
-    /* Try checking if anything was read */
-    if (kbd_check()) {
-        regs.h.ah = 0x06;
-        regs.h.dl = 0xFF;
-        int86(0x21, &regs, &regs);
-        if (regs.h.al != 0) {
-            return (int)(unsigned char)regs.h.al;
-        }
-    }
-
-    return -1;
-}
-
-/*---------------------------------------------------------------------------
  * get_raw_char_wait - Get raw character from DOS (blocking)
  *---------------------------------------------------------------------------*/
 static int get_raw_char_wait(void)
@@ -74,6 +41,22 @@ static int get_raw_char_wait(void)
     int86(0x21, &regs, &regs);
 
     return (int)(unsigned char)regs.h.al;
+}
+
+/*---------------------------------------------------------------------------
+ * get_raw_char - Get raw character from DOS (non-blocking)
+ * Returns character or -1 if none available
+ *
+ * Uses status check + blocking read. AH=06h signals "no character" via
+ * the zero flag, which int86 does not expose - sniffing AL instead
+ * swallowed genuine 0x00 bytes (the IBM extended-key prefix).
+ *---------------------------------------------------------------------------*/
+static int get_raw_char(void)
+{
+    if (!kbd_check()) {
+        return -1;
+    }
+    return get_raw_char_wait();
 }
 
 /*---------------------------------------------------------------------------

@@ -8,10 +8,11 @@ Please update the documentation when changes are made.
 ## Build
 
 ```bash
-make              # Build bin/igc.exe
+make              # Build bin/igc.exe (also writes bin/igc.map)
 make clean        # Remove build artifacts
-make deploy       # Deploy to MAME disk image
+make deploy       # Deploy to MAME disk image (set MAME_DIR=<path>)
 make keytest      # Build keyboard test utility
+make deploy-keytest  # Deploy keytest.exe to the MAME disk image
 ```
 
 ## Architecture
@@ -56,20 +57,21 @@ Uses far pointers (`__far`) for data larger than 64KB. Memory tier detection at 
 ## Key Data Structures
 
 ```c
-// Key event (keyboard.h)
+// Key event (igc.h)
 typedef struct {
     uint8_t type;   // KEY_NONE, KEY_ASCII, KEY_EXTENDED
     uint8_t code;   // ASCII or scan code
 } KeyEvent;
 
-// File entry (panel.h) - 24 bytes
+// File entry (panel.h) - 26 bytes with default -zp2 packing
 typedef struct {
-    char name[13];      // 8.3 filename + null
-    uint8_t attr;       // DOS attributes
-    uint16_t date;      // DOS date format
-    uint16_t time;      // DOS time format
-    uint32_t size;      // File size
-    bool_t selected;    // Selection flag
+    uint8_t  attr;          // DOS attributes
+    uint16_t time;          // DOS time format
+    uint16_t date;          // DOS date format
+    uint32_t size;          // File size
+    char     name[13];      // 8.3 filename + null
+    uint8_t  selected;      // Selection flag
+    uint8_t  padding[2];    // Reserved
 } FileEntry;
 
 // Panel state (panel.h)
@@ -85,8 +87,10 @@ typedef struct {
 
 ## Hardware Constants
 
+All in `igc.h`:
+
 ```c
-// VRAM (screen.h)
+// VRAM
 #define VRAM_SEG    0xF000   // Video RAM segment
 #define CRTC_SEG    0xE800   // CRT controller segment
 
@@ -116,32 +120,39 @@ The Victor 9000 uses different scan codes than IBM PC. Translation in `keyboard.
 ## Common Patterns
 
 ### Screen Updates
-Always use incremental updates via `ui_draw_panel_row()` rather than full redraws:
+Prefer incremental updates over full redraws. `ui_update_cursor()` redraws
+only the old and new cursor rows (or the panel if the view scrolled):
 ```c
-// Good: Update only affected row
-ui_draw_panel_row(panel, old_cursor);
-ui_draw_panel_row(panel, panel->cursor);
+// Good: update only affected rows (see handle_navigation in main.c)
+uint16_t old_cursor = p->cursor, old_top = p->top;
+panel_cursor_down(p);
+ui_update_cursor(old_cursor, old_top);
 
-// Avoid: Full panel redraw (slow)
-ui_draw_panel(panel);
+// Avoid: full panel redraw (slow)
+ui_draw_panel(p, x_offset, active);   // x_offset 0=left, 40=right
 ```
 
 ### Far Pointer Usage
-Large arrays must use far pointers:
+Large arrays must use far pointers (allocated from the DOS far heap):
 ```c
-FileEntry __far *files = (FileEntry __far *)mem_alloc_far(count * sizeof(FileEntry));
+FileEntry __far *files =
+    (FileEntry __far *)mem_alloc((uint32_t)count * sizeof(FileEntry));
 // Access via far pointer
 files[i].name;
+// Release with:
+mem_free(files);
 ```
 
 ### Dialog Overlay Pattern
-Save screen region before dialog, restore after:
+`dlg_open()` saves the background and draws the frame; `dlg_close()`
+restores it and frees the save buffer:
 ```c
-uint16_t __far *saved = dialog_save_region(x, y, w, h);
-// Draw dialog...
-// Handle input...
-dialog_restore_region(saved, x, y, w, h);
-mem_free_far(saved);
+DialogWindow win;
+if (dlg_open(&win, x, y, w, h, "Title")) {
+    dlg_print(&win, 1, 1, "text");
+    // Handle input...
+    dlg_close(&win);
+}
 ```
 
 ## Testing

@@ -15,6 +15,7 @@
 #define DLG_CANCEL      0
 #define DLG_YES         1
 #define DLG_NO          0
+#define DLG_ABORT       (-1)    /* ESC/F10 - cancel the whole operation */
 
 /*---------------------------------------------------------------------------
  * Window Structure (for save/restore)
@@ -76,7 +77,7 @@ int dlg_copy_or_move(const char *filename);
 int dlg_delete_confirm(const char *filename, bool_t is_dir);
 
 /* Overwrite confirmation dialog */
-/* Returns DLG_YES, DLG_NO, or 'A' for All */
+/* Returns DLG_YES, DLG_NO, 'A' for All, or DLG_ABORT (ESC/F10) */
 int dlg_overwrite(const char *filename);
 
 /* Exit confirmation dialog */

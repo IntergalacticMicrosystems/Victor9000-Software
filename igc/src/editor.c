@@ -115,14 +115,28 @@ static void parse_lines(void)
 
     for (i = 0; i < g_editor.buf_used && line < g_editor.max_lines; i++) {
         if (g_editor.buffer[i] == '\n') {
-            if (line < g_editor.max_lines) {
-                g_editor.line_offs[line] = (uint16_t)(i + 1);
-                line++;
-            }
+            g_editor.line_offs[line] = (uint16_t)(i + 1);
+            line++;
         }
     }
 
     g_editor.total_lines = line;
+}
+
+/*---------------------------------------------------------------------------
+ * lines_adjust_after - Shift line offsets after an edit on a line
+ *
+ * Single-character edits only move the start of every following line by
+ * a fixed delta; rescanning the whole buffer (parse_lines) per keystroke
+ * is far too slow on an 8086 with a large buffer.
+ *---------------------------------------------------------------------------*/
+static void lines_adjust_after(uint16_t line, int16_t delta)
+{
+    uint16_t i;
+
+    for (i = line + 1; i < g_editor.total_lines; i++) {
+        g_editor.line_offs[i] += delta;
+    }
 }
 
 /*---------------------------------------------------------------------------
@@ -148,6 +162,16 @@ static bool_t load_file(const char *filename)
         bytes = dos_read(h, &g_editor.buffer[total], to_read);
         if (bytes <= 0) break;
         total += bytes;
+    }
+
+    /* If the buffer filled, probe for unread data - saving a silently
+       truncated load would destroy the rest of the file */
+    g_editor.truncated = FALSE;
+    if (total >= g_editor.buf_size) {
+        char probe;
+        if (dos_read(h, &probe, 1) > 0) {
+            g_editor.truncated = TRUE;
+        }
     }
 
     dos_close(h);
@@ -186,7 +210,9 @@ static bool_t save_file(void)
         uint16_t to_write = (g_editor.buf_used - written > 4096) ?
                             4096 : (uint16_t)(g_editor.buf_used - written);
         bytes = dos_write(h, &g_editor.buffer[written], to_write);
-        if (bytes < 0) {
+        /* DOS reports a full disk as a successful short write, not an
+           error - treat anything less than requested as failure */
+        if (bytes < 0 || (uint16_t)bytes < to_write) {
             dos_close(h);
             return FALSE;
         }
@@ -245,6 +271,9 @@ static void draw_status_bar(void)
     if (g_editor.readonly) {
         str_copy(buf + str_len(buf), " [View]");
     }
+    if (g_editor.truncated) {
+        str_copy(buf + str_len(buf), " [Truncated]");
+    }
     scr_puts_xy(0, 0, buf, ATTR_DIM_REV);
 
     /* Right: line/col position */
@@ -283,7 +312,7 @@ static void draw_help_bar(void)
 static void draw_line(uint16_t screen_row, uint16_t line)
 {
     uint8_t row = EDIT_TOP_ROW + screen_row;
-    uint16_t start, end, len;
+    uint16_t start, len;
     uint16_t i;
     char c;
 
@@ -295,22 +324,9 @@ static void draw_line(uint16_t screen_row, uint16_t line)
         return;
     }
 
-    /* Get line start and end */
+    /* Get line start and length */
     start = g_editor.line_offs[line];
-    if (line + 1 < g_editor.total_lines) {
-        end = g_editor.line_offs[line + 1];
-    } else {
-        end = (uint16_t)g_editor.buf_used;
-    }
-
-    /* Remove trailing newline for display */
-    while (end > start &&
-           (g_editor.buffer[end - 1] == '\n' ||
-            g_editor.buffer[end - 1] == '\r')) {
-        end--;
-    }
-
-    len = end - start;
+    len = get_line_len(line);
 
     /* Draw visible portion */
     for (i = 0; i < EDIT_COLS && (g_editor.left_col + i) < len; i++) {
@@ -331,6 +347,9 @@ static void draw_screen(void)
     for (i = 0; i < EDIT_ROWS; i++) {
         draw_line(i, g_editor.top_line + i);
     }
+
+    /* Row 23 holds transient save/error messages - clear leftovers */
+    scr_fill_rect(0, 23, 80, 1, ' ', ATTR_DIM);
 
     draw_status_bar();
     draw_help_bar();
@@ -505,7 +524,9 @@ static uint16_t get_cursor_offset(void)
 static void insert_char(char c)
 {
     uint16_t offset;
-    uint32_t i;
+    char __far *pd;
+    char __far *ps;
+    uint32_t n;
 
     if (g_editor.readonly) return;
     if (g_editor.buf_used >= g_editor.buf_size - 1) return;
@@ -513,14 +534,27 @@ static void insert_char(char c)
     offset = get_cursor_offset();
 
     /* Shift buffer contents right */
-    for (i = g_editor.buf_used; i > offset; i--) {
-        g_editor.buffer[i] = g_editor.buffer[i - 1];
+    pd = g_editor.buffer + g_editor.buf_used;
+    ps = pd - 1;
+    n = g_editor.buf_used - offset;
+    while (n--) {
+        *pd-- = *ps--;
     }
     g_editor.buffer[offset] = c;
     g_editor.buf_used++;
 
-    /* Update line offsets */
-    parse_lines();
+    /* Update line offsets incrementally */
+    if (c == '\n') {
+        /* New line starts right after the inserted newline */
+        uint16_t i;
+        for (i = g_editor.total_lines; i > g_editor.cursor_line + 1; i--) {
+            g_editor.line_offs[i] = g_editor.line_offs[i - 1] + 1;
+        }
+        g_editor.line_offs[g_editor.cursor_line + 1] = offset + 1;
+        g_editor.total_lines++;
+    } else {
+        lines_adjust_after(g_editor.cursor_line, 1);
+    }
 
     g_editor.cursor_col++;
     g_editor.modified = TRUE;
@@ -555,8 +589,11 @@ static void insert_newline(void)
 static void delete_char(void)
 {
     uint16_t offset;
-    uint32_t i;
     uint16_t del_count = 1;
+    bool_t removes_newline;
+    char __far *pd;
+    char __far *ps;
+    uint32_t n;
 
     if (g_editor.readonly) return;
 
@@ -570,14 +607,36 @@ static void delete_char(void)
         del_count = 2;
     }
 
+    removes_newline = (g_editor.buffer[offset] == '\n' || del_count == 2)
+                      ? TRUE : FALSE;
+
     /* Shift buffer contents left */
-    for (i = offset; i < g_editor.buf_used - del_count; i++) {
-        g_editor.buffer[i] = g_editor.buffer[i + del_count];
+    pd = g_editor.buffer + offset;
+    ps = pd + del_count;
+    n = g_editor.buf_used - offset - del_count;
+    while (n--) {
+        *pd++ = *ps++;
     }
     g_editor.buf_used -= del_count;
 
-    /* Update line offsets */
-    parse_lines();
+    /* Update line offsets incrementally */
+    if (removes_newline) {
+        if (g_editor.cursor_line + 1 < g_editor.total_lines) {
+            /* The next line merges into this one - drop its entry */
+            uint16_t i;
+            for (i = g_editor.cursor_line + 1;
+                 i + 1 < g_editor.total_lines; i++) {
+                g_editor.line_offs[i] = g_editor.line_offs[i + 1] - del_count;
+            }
+            g_editor.total_lines--;
+        } else {
+            /* Newline inside the last tracked line - only happens when
+               the line table was full, so the cheap update is wrong */
+            parse_lines();
+        }
+    } else {
+        lines_adjust_after(g_editor.cursor_line, -(int16_t)del_count);
+    }
 
     g_editor.modified = TRUE;
     clamp_cursor_col();
@@ -625,10 +684,11 @@ static void cut_line(void)
         g_cut_len = 0;
     }
 
-    /* Calculate how much we can copy (don't overflow cut buffer) */
-    copy_len = len;
-    if (g_cut_len + copy_len > CUT_BUF_SIZE - 1) {
-        copy_len = CUT_BUF_SIZE - 1 - g_cut_len;
+    /* Calculate how much we can copy (don't overflow cut buffer).
+       Compare via the remaining space - the sum can wrap at 16 bits. */
+    {
+        uint16_t space = CUT_BUF_SIZE - 1 - g_cut_len;
+        copy_len = (len > space) ? space : len;
     }
 
     if (copy_len > 0) {
@@ -688,7 +748,10 @@ static void paste_line(void)
     /* Update line offsets */
     parse_lines();
 
+    /* The line under the cursor changed - keep the cursor inside it */
+    clamp_cursor_col();
     g_editor.modified = TRUE;
+    scroll_if_needed();
     draw_screen();
 }
 
@@ -788,12 +851,15 @@ static void editor_run(void)
                     break;
                 case KEY_F2:
                     if (!g_editor.readonly) {
-                        if (save_file()) {
+                        /* Redraw first - the message stays visible until
+                           the next full repaint clears row 23 */
+                        bool_t saved = save_file();
+                        draw_screen();
+                        if (saved) {
                             ui_status("File saved");
                         } else {
-                            ui_error("Save failed");
+                            ui_error("Save failed - disk full?");
                         }
-                        draw_screen();
                     }
                     break;
                 case KEY_F7:
@@ -846,10 +912,17 @@ void editor_edit(const char *filename)
     g_editor.readonly = FALSE;
 
     if (load_file(filename)) {
+        if (g_editor.truncated) {
+            /* Editing a partial load and saving would cut the file
+               down to the buffer size - only allow viewing */
+            g_editor.readonly = TRUE;
+            dlg_alert("File Too Large", "Opened read-only");
+        }
         editor_run();
     } else {
         /* New file */
         str_copy(g_editor.filename, filename);
+        g_editor.truncated = FALSE;
         g_editor.buf_used = 0;
         g_editor.total_lines = 1;
         g_editor.line_offs[0] = 0;

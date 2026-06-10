@@ -14,35 +14,23 @@
 /*---------------------------------------------------------------------------
  * Static variables
  *---------------------------------------------------------------------------*/
+/* Recursion guard for copy/delete - each level uses ~250 bytes of stack */
+#define MAX_DIR_DEPTH 24
+
 static uint8_t __far *g_copy_buf = (uint8_t __far *)0;
 static uint16_t g_copy_buf_size = 0;
 static int g_overwrite_all = 0;     /* 1 = overwrite all without asking */
 static uint16_t g_file_count = 0;   /* For progress display */
 static uint16_t g_file_current = 0;
+static uint8_t g_dir_depth = 0;
 
 /*---------------------------------------------------------------------------
  * fops_init - Initialize file operations module
  *---------------------------------------------------------------------------*/
 bool_t fops_init(void)
 {
-    uint8_t tier = mem_get_tier();
-
-    /* Allocate copy buffer based on memory tier */
-    switch (tier) {
-        case MEM_HIGH:
-            g_copy_buf_size = COPY_BUF_HIGH;
-            break;
-        case MEM_MEDIUM:
-            g_copy_buf_size = COPY_BUF_MEDIUM;
-            break;
-        case MEM_LOW:
-            g_copy_buf_size = COPY_BUF_LOW;
-            break;
-        case MEM_TINY:
-        default:
-            g_copy_buf_size = COPY_BUF_TINY;
-            break;
-    }
+    /* Copy buffer size for the current tier, computed by mem_init */
+    g_copy_buf_size = mem_get_copy_buf_size();
 
     g_copy_buf = (uint8_t __far *)mem_alloc(g_copy_buf_size);
     if (g_copy_buf == (uint8_t __far *)0) {
@@ -70,17 +58,7 @@ void fops_shutdown(void)
  *---------------------------------------------------------------------------*/
 static void build_src_path(Panel *p, FileEntry __far *f, char *buf)
 {
-    buf[0] = 'A' + p->drive;
-    buf[1] = ':';
-    buf[2] = '\\';
-    if (p->path[0] == '\\') {
-        str_copy(&buf[3], &p->path[1]);
-    } else if (p->path[0] != '\0') {
-        str_copy(&buf[3], p->path);
-    } else {
-        buf[3] = '\0';
-    }
-    path_append(buf, f->name);
+    path_build(buf, p->drive, p->path, f->name);
 }
 
 /*---------------------------------------------------------------------------
@@ -88,17 +66,43 @@ static void build_src_path(Panel *p, FileEntry __far *f, char *buf)
  *---------------------------------------------------------------------------*/
 static void build_dst_path(Panel *p, const char *filename, char *buf)
 {
-    buf[0] = 'A' + p->drive;
-    buf[1] = ':';
-    buf[2] = '\\';
-    if (p->path[0] == '\\') {
-        str_copy(&buf[3], &p->path[1]);
-    } else if (p->path[0] != '\0') {
-        str_copy(&buf[3], p->path);
-    } else {
-        buf[3] = '\0';
+    path_build(buf, p->drive, p->path, filename);
+}
+
+/*---------------------------------------------------------------------------
+ * path_is_inside - TRUE if dst equals src or lies inside it
+ *---------------------------------------------------------------------------*/
+static bool_t path_is_inside(const char *src, const char *dst)
+{
+    uint16_t len = str_len(src);
+    uint16_t i;
+
+    for (i = 0; i < len; i++) {
+        if (char_upper(src[i]) != char_upper(dst[i])) {
+            return FALSE;
+        }
     }
-    path_append(buf, filename);
+
+    return (dst[len] == '\0' || dst[len] == '\\') ? TRUE : FALSE;
+}
+
+/*---------------------------------------------------------------------------
+ * same_location - TRUE if both panels show the same drive and directory
+ *---------------------------------------------------------------------------*/
+static bool_t same_location(Panel *a, Panel *b)
+{
+    const char *pa = a->path;
+    const char *pb = b->path;
+
+    if (a->drive != b->drive) {
+        return FALSE;
+    }
+
+    /* Normalize the leading backslash, as build_src_path does */
+    if (pa[0] == '\\') pa++;
+    if (pb[0] == '\\') pb++;
+
+    return (str_cmp_i(pa, pb) == 0) ? TRUE : FALSE;
 }
 
 /*---------------------------------------------------------------------------
@@ -108,7 +112,17 @@ int fops_copy_file(const char *src, const char *dst)
 {
     dos_handle_t src_h, dst_h;
     int16_t bytes_read, bytes_written;
+    int16_t src_attr;
+    uint16_t src_date = 0, src_time = 0;
     int result = FOPS_OK;
+
+    /* Copying a file onto itself would delete the source in the
+       overwrite path below before it is ever opened */
+    if (str_cmp_i(src, dst) == 0) {
+        ui_error("Source and destination are the same file");
+        kbd_wait();
+        return FOPS_ERROR;
+    }
 
     /* Check if destination exists */
     if (dos_exists(dst)) {
@@ -122,9 +136,13 @@ int fops_copy_file(const char *src, const char *dst)
                 return FOPS_CANCEL;
             }
         }
-        /* Delete existing file */
-        dos_delete(dst);
+        /* Delete existing file (also clears a read-only attribute) */
+        if (fops_delete_file(dst) != FOPS_OK) {
+            return FOPS_ERROR;
+        }
     }
+
+    src_attr = dos_get_attr(src);
 
     /* Open source file */
     src_h = dos_open(src, DOS_OPEN_READ);
@@ -132,6 +150,11 @@ int fops_copy_file(const char *src, const char *dst)
         ui_error("Cannot open source file");
         kbd_wait();
         return FOPS_ERROR;
+    }
+
+    /* Source timestamp, preserved on the copy */
+    if (dos_get_ftime(src_h, &src_date, &src_time) != 0) {
+        src_date = 0;
     }
 
     /* Create destination file */
@@ -147,6 +170,8 @@ int fops_copy_file(const char *src, const char *dst)
     while (1) {
         bytes_read = dos_read(src_h, g_copy_buf, g_copy_buf_size);
         if (bytes_read < 0) {
+            ui_error("Read error");
+            kbd_wait();
             result = FOPS_ERROR;
             break;
         }
@@ -154,8 +179,11 @@ int fops_copy_file(const char *src, const char *dst)
             break;  /* EOF */
         }
 
+        /* DOS reports a full disk as a short write, not an error */
         bytes_written = dos_write(dst_h, g_copy_buf, (uint16_t)bytes_read);
         if (bytes_written != bytes_read) {
+            ui_error("Write error - disk full?");
+            kbd_wait();
             result = FOPS_ERROR;
             break;
         }
@@ -163,11 +191,16 @@ int fops_copy_file(const char *src, const char *dst)
         /* Check for user cancel (ESC) */
         if (kbd_check()) {
             KeyEvent key = kbd_get();
-            if (key.code == KEY_ESC) {
+            if (key.type == KEY_ASCII && key.code == KEY_ESC) {
                 result = FOPS_CANCEL;
                 break;
             }
         }
+    }
+
+    /* Stamp the copy with the source's date/time (applied at close) */
+    if (result == FOPS_OK && src_date != 0) {
+        dos_set_ftime(dst_h, src_date, src_time);
     }
 
     dos_close(src_h);
@@ -175,6 +208,8 @@ int fops_copy_file(const char *src, const char *dst)
 
     if (result != FOPS_OK) {
         dos_delete(dst);  /* Clean up partial file */
+    } else if (src_attr > 0) {
+        dos_set_attr(dst, (uint8_t)src_attr);
     }
 
     return result;
@@ -185,11 +220,26 @@ int fops_copy_file(const char *src, const char *dst)
  *---------------------------------------------------------------------------*/
 int fops_copy_dir(const char *src, const char *dst)
 {
-    char src_path[80];
-    char dst_path[80];
+    char src_path[MAX_FULL_PATH];
+    char dst_path[MAX_FULL_PATH];
     DTA dta;
     DTA __far *old_dta;
     int result = FOPS_OK;
+
+    /* Copying a directory into itself would recurse endlessly: the new
+       destination shows up in the live enumeration of the source */
+    if (path_is_inside(src, dst)) {
+        ui_error("Cannot copy directory into itself");
+        kbd_wait();
+        return FOPS_ERROR;
+    }
+
+    /* Guard the stack against runaway recursion */
+    if (g_dir_depth >= MAX_DIR_DEPTH) {
+        ui_error("Directory tree too deep");
+        kbd_wait();
+        return FOPS_ERROR;
+    }
 
     /* Create destination directory */
     if (dos_mkdir(dst) != 0) {
@@ -205,6 +255,7 @@ int fops_copy_dir(const char *src, const char *dst)
     path_append(src_path, "*.*");
 
     /* Save and set DTA */
+    g_dir_depth++;
     old_dta = dos_get_dta();
     dos_set_dta(&dta);
 
@@ -225,8 +276,7 @@ int fops_copy_dir(const char *src, const char *dst)
             str_copy(dst_path, dst);
             path_append(dst_path, dta.name);
 
-            /* Update progress */
-            g_file_current++;
+            /* Show the nested name against the top-level counters */
             ui_show_progress("Copying", dta.name, g_file_current, g_file_count);
 
             if (dta.attr & DOS_ATTR_DIRECTORY) {
@@ -250,6 +300,7 @@ int fops_copy_dir(const char *src, const char *dst)
 
     /* Restore DTA */
     dos_set_dta(old_dta);
+    g_dir_depth--;
 
     return result;
 }
@@ -279,16 +330,24 @@ int fops_delete_file(const char *path)
  *---------------------------------------------------------------------------*/
 int fops_delete_dir(const char *path)
 {
-    char full_path[80];
+    char full_path[MAX_FULL_PATH];
     DTA dta;
     DTA __far *old_dta;
     int result = FOPS_OK;
+
+    /* Guard the stack against runaway recursion */
+    if (g_dir_depth >= MAX_DIR_DEPTH) {
+        ui_error("Directory tree too deep");
+        kbd_wait();
+        return FOPS_ERROR;
+    }
 
     /* Build search pattern */
     str_copy(full_path, path);
     path_append(full_path, "*.*");
 
     /* Save and set DTA */
+    g_dir_depth++;
     old_dta = dos_get_dta();
     dos_set_dta(&dta);
 
@@ -307,8 +366,7 @@ int fops_delete_dir(const char *path)
             str_copy(full_path, path);
             path_append(full_path, dta.name);
 
-            /* Update progress */
-            g_file_current++;
+            /* Show the nested name against the top-level counters */
             ui_show_progress("Deleting", dta.name, g_file_current, g_file_count);
 
             if (dta.attr & DOS_ATTR_DIRECTORY) {
@@ -326,7 +384,7 @@ int fops_delete_dir(const char *path)
             /* Check for user cancel (ESC) */
             if (kbd_check()) {
                 KeyEvent key = kbd_get();
-                if (key.code == KEY_ESC) {
+                if (key.type == KEY_ASCII && key.code == KEY_ESC) {
                     result = FOPS_CANCEL;
                     break;
                 }
@@ -337,6 +395,7 @@ int fops_delete_dir(const char *path)
 
     /* Restore DTA */
     dos_set_dta(old_dta);
+    g_dir_depth--;
 
     /* Remove the now-empty directory */
     if (result == FOPS_OK) {
@@ -430,11 +489,17 @@ int fops_copy(void)
     Panel *src_panel = panel_get_active();
     Panel *dst_panel = panel_get_other();
     FileEntry __far *f;
-    char src_path[80];
-    char dst_path[80];
+    char src_path[MAX_FULL_PATH];
+    char dst_path[MAX_FULL_PATH];
     uint16_t i;
     uint16_t selected;
     int result = FOPS_OK;
+
+    if (same_location(src_panel, dst_panel)) {
+        ui_error("Source and destination are the same directory");
+        kbd_wait();
+        return FOPS_ERROR;
+    }
 
     /* Reset state */
     g_overwrite_all = 0;
@@ -506,11 +571,17 @@ int fops_move(void)
     Panel *src_panel = panel_get_active();
     Panel *dst_panel = panel_get_other();
     FileEntry __far *f;
-    char src_path[80];
-    char dst_path[80];
+    char src_path[MAX_FULL_PATH];
+    char dst_path[MAX_FULL_PATH];
     uint16_t i;
     uint16_t selected;
     int result = FOPS_OK;
+
+    if (same_location(src_panel, dst_panel)) {
+        ui_error("Source and destination are the same directory");
+        kbd_wait();
+        return FOPS_ERROR;
+    }
 
     /* Reset state */
     g_overwrite_all = 0;
@@ -624,7 +695,7 @@ int fops_delete(void)
 {
     Panel *panel = panel_get_active();
     FileEntry __far *f;
-    char path[80];
+    char path[MAX_FULL_PATH];
     uint16_t i;
     uint16_t selected;
     int result = FOPS_OK;
@@ -705,7 +776,7 @@ int fops_mkdir(void)
 {
     Panel *panel = panel_get_active();
     char name[14];
-    char path[80];
+    char path[MAX_FULL_PATH];
 
     name[0] = '\0';
 
@@ -718,17 +789,7 @@ int fops_mkdir(void)
     }
 
     /* Build full path */
-    path[0] = 'A' + panel->drive;
-    path[1] = ':';
-    path[2] = '\\';
-    if (panel->path[0] == '\\') {
-        str_copy(&path[3], &panel->path[1]);
-    } else if (panel->path[0] != '\0') {
-        str_copy(&path[3], panel->path);
-    } else {
-        path[3] = '\0';
-    }
-    path_append(path, name);
+    path_build(path, panel->drive, panel->path, name);
 
     if (dos_mkdir(path) != 0) {
         ui_error("Cannot create directory");
@@ -751,8 +812,8 @@ int fops_rename(void)
     FileEntry __far *f;
     char old_name[14];
     char new_name[14];
-    char old_path[80];
-    char new_path[80];
+    char old_path[MAX_FULL_PATH];
+    char new_path[MAX_FULL_PATH];
 
     f = panel_get_cursor_file(panel);
     if (f == (FileEntry __far *)0) return FOPS_CANCEL;
@@ -775,29 +836,8 @@ int fops_rename(void)
     }
 
     /* Build full paths */
-    old_path[0] = 'A' + panel->drive;
-    old_path[1] = ':';
-    old_path[2] = '\\';
-    if (panel->path[0] == '\\') {
-        str_copy(&old_path[3], &panel->path[1]);
-    } else if (panel->path[0] != '\0') {
-        str_copy(&old_path[3], panel->path);
-    } else {
-        old_path[3] = '\0';
-    }
-    path_append(old_path, old_name);
-
-    new_path[0] = 'A' + panel->drive;
-    new_path[1] = ':';
-    new_path[2] = '\\';
-    if (panel->path[0] == '\\') {
-        str_copy(&new_path[3], &panel->path[1]);
-    } else if (panel->path[0] != '\0') {
-        str_copy(&new_path[3], panel->path);
-    } else {
-        new_path[3] = '\0';
-    }
-    path_append(new_path, new_name);
+    path_build(old_path, panel->drive, panel->path, old_name);
+    path_build(new_path, panel->drive, panel->path, new_name);
 
     if (dos_rename(old_path, new_path) != 0) {
         ui_error("Cannot rename file");

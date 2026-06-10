@@ -9,7 +9,9 @@
 #include "igc.h"
 
 /*---------------------------------------------------------------------------
- * File Entry Structure (24 bytes)
+ * File Entry Structure
+ * (26 bytes with the default -zp2 packing: one pad byte after attr,
+ * one after padding[1] - always use sizeof(FileEntry))
  *---------------------------------------------------------------------------*/
 typedef struct {
     uint8_t  attr;          /* DOS file attribute */
@@ -18,10 +20,8 @@ typedef struct {
     uint32_t size;          /* File size in bytes */
     char     name[13];      /* Filename (8.3 + null) */
     uint8_t  selected;      /* Selection flag */
-    uint8_t  padding[2];    /* Align to 24 bytes */
+    uint8_t  padding[2];    /* Reserved */
 } FileEntry;
-
-#define FILE_ENTRY_SIZE 24
 
 /*---------------------------------------------------------------------------
  * File List Structure (dynamic array)

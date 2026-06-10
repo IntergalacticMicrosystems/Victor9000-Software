@@ -60,7 +60,7 @@ void ui_draw_frame(void)
 void ui_draw_panel_path(Panel *p, uint8_t x_offset, bool_t active)
 {
     char buf[40];
-    uint16_t free_kb;
+    uint32_t free_kb;
     uint8_t path_len, free_len;
     uint8_t free_start;
     uint8_t path_attr;
@@ -99,11 +99,16 @@ void ui_draw_panel_path(Panel *p, uint8_t x_offset, bool_t active)
     scr_puts_n_xy(start_col + 1, ROW_TITLE, buf, path_len, path_attr);
 
     /* Draw free space (right-justified before panel separator) */
-    free_kb = (uint16_t)(dos_get_free_space(p->drive) & 0xFFFF);
+    free_kb = dos_get_free_space(p->drive);
     if (free_kb > 0) {
-        /* Format as "NNNNk" without comma */
-        num_format_simple(buf, free_kb);
-        str_copy(buf + str_len(buf), "K");
+        /* Format as "NNNNK", switching to "NNM" for large drives */
+        if (free_kb >= 10000L) {
+            num_format_simple(buf, free_kb / 1024L);
+            str_copy(buf + str_len(buf), "M");
+        } else {
+            num_format_simple(buf, free_kb);
+            str_copy(buf + str_len(buf), "K");
+        }
         free_len = str_len(buf);
         free_start = end_col - free_len;
         scr_puts_xy(free_start, ROW_TITLE, buf, ATTR_DIM);
@@ -140,34 +145,25 @@ void ui_draw_headers(void)
 }
 
 /*---------------------------------------------------------------------------
- * ui_draw_fkey_bar - Draw F-key bar (F1-F7 layout, centered)
+ * ui_draw_fkey_bar - Draw F-key bar (F1-F8: dim number, 8-char label)
  *---------------------------------------------------------------------------*/
 void ui_draw_fkey_bar(void)
 {
+    static const char *labels[8] = {
+        "Drive   ", "Mkdir   ", "View    ", "Edit    ",
+        "CpyMov  ", "Delete  ", "Quit    ", "Rename  "
+    };
+    uint8_t i;
+    uint8_t x;
+
     /* Clear row with dim attribute */
     scr_fill_rect(0, ROW_FKEYS, 80, 1, ' ', ATTR_DIM);
 
-    /* F1-F7: dim number, 9-char reverse label, centered (starts at col 2) */
-    scr_putc_xy(2, ROW_FKEYS, '1', ATTR_DIM);
-    scr_puts_xy(3, ROW_FKEYS, "Drive    ", ATTR_DIM_REV);
-
-    scr_putc_xy(13, ROW_FKEYS, '2', ATTR_DIM);
-    scr_puts_xy(14, ROW_FKEYS, "Mkdir    ", ATTR_DIM_REV);
-
-    scr_putc_xy(24, ROW_FKEYS, '3', ATTR_DIM);
-    scr_puts_xy(25, ROW_FKEYS, "View     ", ATTR_DIM_REV);
-
-    scr_putc_xy(35, ROW_FKEYS, '4', ATTR_DIM);
-    scr_puts_xy(36, ROW_FKEYS, "Edit     ", ATTR_DIM_REV);
-
-    scr_putc_xy(46, ROW_FKEYS, '5', ATTR_DIM);
-    scr_puts_xy(47, ROW_FKEYS, "CpyMov   ", ATTR_DIM_REV);
-
-    scr_putc_xy(57, ROW_FKEYS, '6', ATTR_DIM);
-    scr_puts_xy(58, ROW_FKEYS, "Delete   ", ATTR_DIM_REV);
-
-    scr_putc_xy(68, ROW_FKEYS, '7', ATTR_DIM);
-    scr_puts_xy(69, ROW_FKEYS, "Quit     ", ATTR_DIM_REV);
+    for (i = 0; i < 8; i++) {
+        x = i * 10;
+        scr_putc_xy(x, ROW_FKEYS, '1' + i, ATTR_DIM);
+        scr_puts_xy(x + 1, ROW_FKEYS, labels[i], ATTR_DIM_REV);
+    }
 }
 
 /*---------------------------------------------------------------------------
@@ -322,7 +318,7 @@ void ui_error(const char *msg)
 {
     scr_fill_rect(0, ROW_STATUS, 80, 1, ' ', ATTR_DIM_REV);
     scr_puts_xy(1, ROW_STATUS, "ERROR: ", ATTR_DIM_REV);
-    scr_puts(msg);
+    scr_puts_xy(8, ROW_STATUS, msg, ATTR_DIM_REV);
 }
 
 /*---------------------------------------------------------------------------
@@ -362,7 +358,8 @@ void ui_show_progress(const char *title, const char *filename,
 
     /* Calculate percentage */
     if (total > 0) {
-        pct = (uint8_t)((uint32_t)current * 100L / total);
+        uint32_t p = (uint32_t)current * 100L / total;
+        pct = (p > 100L) ? 100 : (uint8_t)p;
     } else {
         pct = 0;
     }
@@ -381,13 +378,13 @@ void ui_show_progress(const char *title, const char *filename,
 
     /* Draw progress bar */
     bar_len = (pct * 20) / 100;
-    scr_putc_xy(55, ROW_STATUS, '[', ATTR_DIM);
+    scr_putc_xy(53, ROW_STATUS, '[', ATTR_DIM);
     for (i = 0; i < 20; i++) {
-        scr_putc_xy(56 + i, ROW_STATUS, (i < bar_len) ? 0xDB : 0xB0, ATTR_DIM);
+        scr_putc_xy(54 + i, ROW_STATUS, (i < bar_len) ? 0xDB : 0xB0, ATTR_DIM);
     }
-    scr_putc_xy(76, ROW_STATUS, ']', ATTR_DIM);
+    scr_putc_xy(74, ROW_STATUS, ']', ATTR_DIM);
 
-    /* Show percentage */
+    /* Show percentage (columns 76-79, so "100%" fits on screen) */
     buf[0] = '0' + (pct / 100) % 10;
     buf[1] = '0' + (pct / 10) % 10;
     buf[2] = '0' + pct % 10;
@@ -397,7 +394,7 @@ void ui_show_progress(const char *title, const char *filename,
         buf[0] = ' ';
         if (buf[1] == '0') buf[1] = ' ';
     }
-    scr_puts_xy(78, ROW_STATUS, buf, ATTR_DIM);
+    scr_puts_xy(76, ROW_STATUS, buf, ATTR_DIM);
 }
 
 /*---------------------------------------------------------------------------

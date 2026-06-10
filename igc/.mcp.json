@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "mame-mcp-server": {
+    "mame": {
       "type": "stdio",
       "command": "node",
       "args": [

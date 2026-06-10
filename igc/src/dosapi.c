@@ -23,15 +23,14 @@ static void (__interrupt __far *old_int24)(void) = (void (__interrupt __far *)(v
 static uint8_t crit_handler_installed = 0;
 static uint8_t dos_major_version = 0;
 
-/* Critical error handler for DOS 3.x+ - set AL=3 (fail) and return
- * Stack layout: AX is saved at [BP+22] (0x16)
+/* Critical error handler for DOS 3.x+ - set AL=3 (fail) and return.
+ * Watcom's INTPACK form writes to the saved registers, so this stays
+ * correct regardless of compiler flags or prologue layout.
  */
-static void __interrupt __far crit_error_handler(void)
+static void __interrupt __far crit_error_handler(union INTPACK r)
 {
     /* Set AL=3 to tell DOS to fail the call */
-    _asm {
-        mov word ptr [bp+22], 3
-    }
+    r.h.al = 3;
 }
 
 /*---------------------------------------------------------------------------
@@ -212,6 +211,8 @@ DTA __far *dos_get_dta(void)
 {
     union REGS regs;
     struct SREGS sregs;
+
+    segread(&sregs);
 
     regs.h.ah = 0x2F;
     int86x(0x21, &regs, &regs, &sregs);
@@ -497,6 +498,45 @@ uint32_t dos_file_size(dos_handle_t handle)
     int86(0x21, &regs, &regs);
 
     return size;
+}
+
+/*---------------------------------------------------------------------------
+ * dos_get_ftime - Get file date/time from open handle
+ *---------------------------------------------------------------------------*/
+int dos_get_ftime(dos_handle_t handle, uint16_t *date, uint16_t *time)
+{
+    union REGS regs;
+
+    regs.h.ah = 0x57;
+    regs.h.al = 0x00;
+    regs.x.bx = (uint16_t)handle;
+    int86(0x21, &regs, &regs);
+
+    if (regs.x.cflag) {
+        return -1;
+    }
+
+    *time = regs.x.cx;
+    *date = regs.x.dx;
+    return 0;
+}
+
+/*---------------------------------------------------------------------------
+ * dos_set_ftime - Set file date/time on open handle
+ * Takes effect when the handle is closed.
+ *---------------------------------------------------------------------------*/
+int dos_set_ftime(dos_handle_t handle, uint16_t date, uint16_t time)
+{
+    union REGS regs;
+
+    regs.h.ah = 0x57;
+    regs.h.al = 0x01;
+    regs.x.bx = (uint16_t)handle;
+    regs.x.cx = time;
+    regs.x.dx = date;
+    int86(0x21, &regs, &regs);
+
+    return regs.x.cflag ? -1 : 0;
 }
 
 /*---------------------------------------------------------------------------

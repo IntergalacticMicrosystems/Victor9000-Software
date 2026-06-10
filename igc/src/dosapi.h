@@ -119,6 +119,12 @@ int16_t dos_write(dos_handle_t handle, const void __far *buf, uint16_t count);
 /* Get file size (via seek to end and back) */
 uint32_t dos_file_size(dos_handle_t handle);
 
+/* Get file date/time from open handle (returns 0 on success) */
+int dos_get_ftime(dos_handle_t handle, uint16_t *date, uint16_t *time);
+
+/* Set file date/time on open handle; takes effect at close (returns 0 on success) */
+int dos_set_ftime(dos_handle_t handle, uint16_t date, uint16_t time);
+
 /* Delete file */
 int dos_delete(const char *path);
 

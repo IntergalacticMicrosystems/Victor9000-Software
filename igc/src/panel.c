@@ -3,8 +3,6 @@
  * File list management with dynamic allocation
  */
 
-#include <dos.h>
-#include <i86.h>
 #include "panel.h"
 #include "mem.h"
 #include "util.h"
@@ -20,52 +18,6 @@ uint8_t g_active_panel = 0;
 
 /* Static DTA for find operations */
 static DTA g_dta;
-
-/*---------------------------------------------------------------------------
- * Set DTA address for find operations
- *---------------------------------------------------------------------------*/
-static void set_dta(DTA *dta)
-{
-    union REGS regs;
-    struct SREGS sregs;
-
-    segread(&sregs);
-    regs.h.ah = 0x1A;
-    regs.x.dx = FP_OFF(dta);
-    sregs.ds = FP_SEG(dta);
-    int86x(0x21, &regs, &regs, &sregs);
-}
-
-/*---------------------------------------------------------------------------
- * Find first file matching pattern
- *---------------------------------------------------------------------------*/
-static int find_first(const char *pattern, uint8_t attr)
-{
-    union REGS regs;
-    struct SREGS sregs;
-
-    segread(&sregs);
-    regs.h.ah = 0x4E;
-    regs.x.cx = attr;
-    regs.x.dx = FP_OFF(pattern);
-    sregs.ds = FP_SEG(pattern);
-    int86x(0x21, &regs, &regs, &sregs);
-
-    return regs.x.cflag ? -1 : 0;
-}
-
-/*---------------------------------------------------------------------------
- * Find next file
- *---------------------------------------------------------------------------*/
-static int find_next(void)
-{
-    union REGS regs;
-
-    regs.h.ah = 0x4F;
-    int86(0x21, &regs, &regs);
-
-    return regs.x.cflag ? -1 : 0;
-}
 
 /*---------------------------------------------------------------------------
  * Compare file entries for sorting (directories first, then alphabetical)
@@ -89,28 +41,28 @@ static int file_compare(FileEntry __far *a, FileEntry __far *b)
 }
 
 /*---------------------------------------------------------------------------
- * Sort file list (simple bubble sort - adequate for small lists)
+ * Sort file list (insertion sort - DOS returns directories mostly in
+ * creation order, so lists are often nearly sorted already; bubble sort
+ * was too slow for the 1024-entry HIGH tier on an 8086)
  *---------------------------------------------------------------------------*/
 static void sort_files(FileList *fl)
 {
-    uint16_t i, j;
+    uint16_t i;
+    uint16_t j;
     FileEntry temp;
-    FileEntry __far *a;
-    FileEntry __far *b;
 
-    if (fl->count < 2) return;
+    for (i = 1; i < fl->count; i++) {
+        mem_copy_far(&temp, &fl->entries[i], sizeof(FileEntry));
 
-    for (i = 0; i < fl->count - 1; i++) {
-        for (j = 0; j < fl->count - i - 1; j++) {
-            a = &fl->entries[j];
-            b = &fl->entries[j + 1];
+        j = i;
+        while (j > 0 && file_compare(&fl->entries[j - 1], &temp) > 0) {
+            mem_copy_far(&fl->entries[j], &fl->entries[j - 1],
+                         sizeof(FileEntry));
+            j--;
+        }
 
-            if (file_compare(a, b) > 0) {
-                /* Swap */
-                mem_copy_far(&temp, a, sizeof(FileEntry));
-                mem_copy_far(a, b, sizeof(FileEntry));
-                mem_copy_far(b, &temp, sizeof(FileEntry));
-            }
+        if (j != i) {
+            mem_copy_far(&fl->entries[j], &temp, sizeof(FileEntry));
         }
     }
 }
@@ -241,26 +193,15 @@ int panel_read_dir(Panel *p)
     ui_status("Reading directory...");
 
     /* Build search pattern */
-    pattern[0] = 'A' + p->drive;
-    pattern[1] = ':';
-    pattern[2] = '\\';
-
-    if (p->path[0] == '\\') {
-        str_copy(&pattern[3], &p->path[1]);
-    } else if (p->path[0] != '\0') {
-        str_copy(&pattern[3], p->path);
-    } else {
-        pattern[3] = '\0';
-    }
-
-    path_append(pattern, "*.*");
+    path_build(pattern, p->drive, p->path, "*.*");
 
     /* Set DTA */
-    set_dta(&g_dta);
+    dos_set_dta(&g_dta);
 
     /* Clear file list */
     p->files.count = 0;
     p->files.truncated = FALSE;
+    p->sel_count = 0;
 
     /* Add ".." entry if not at root */
     if (!path_is_root(p->path)) {
@@ -277,18 +218,18 @@ int panel_read_dir(Panel *p)
     }
 
     /* Find first file */
-    result = find_first(pattern, DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM);
+    result = dos_find_first(pattern, DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM);
 
     while (result == 0 && count < p->files.capacity) {
         /* Skip "." entry */
         if (g_dta.name[0] == '.' && g_dta.name[1] == '\0') {
-            result = find_next();
+            result = dos_find_next();
             continue;
         }
 
         /* Skip ".." - we add it manually */
         if (g_dta.name[0] == '.' && g_dta.name[1] == '.' && g_dta.name[2] == '\0') {
-            result = find_next();
+            result = dos_find_next();
             continue;
         }
 
@@ -302,7 +243,7 @@ int panel_read_dir(Panel *p)
         entry->selected = 0;
 
         count++;
-        result = find_next();
+        result = dos_find_next();
     }
 
     /* Check if truncated */
@@ -362,7 +303,12 @@ int panel_change_dir(Panel *p, const char *dirname)
         path_append(newpath, dirname);
     }
 
-    /* Save old path in case of failure */
+    /* Reject paths too long for Panel.path - overflow would corrupt
+       the fields (including the file list far pointer) that follow it */
+    if (str_len(newpath) >= MAX_PATH_LEN) {
+        return -1;
+    }
+
     str_copy(p->path, newpath);
 
     /* Reset cursor */
@@ -481,7 +427,8 @@ void panel_cursor_up(Panel *p)
 
 void panel_cursor_down(Panel *p)
 {
-    if (p->cursor < p->files.count - 1) {
+    /* count is unsigned: count - 1 underflows on an empty list */
+    if (p->files.count != 0 && p->cursor < p->files.count - 1) {
         p->cursor++;
         if (p->cursor >= p->top + PANEL_HEIGHT) {
             p->top = p->cursor - PANEL_HEIGHT + 1;

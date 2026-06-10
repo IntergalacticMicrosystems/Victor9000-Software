@@ -18,14 +18,8 @@
 #define FOPS_SKIP        -3
 
 /*---------------------------------------------------------------------------
- * Copy Buffer Size (based on memory tier)
- *---------------------------------------------------------------------------*/
-#define COPY_BUF_LOW     512     /* Low memory: 512 bytes */
-#define COPY_BUF_MEDIUM  2048    /* Medium memory: 2KB */
-#define COPY_BUF_HIGH    8192    /* High memory: 8KB */
-
-/*---------------------------------------------------------------------------
  * File Operations
+ * (Copy buffer sizes COPY_BUF_* come from igc.h)
  *---------------------------------------------------------------------------*/
 
 /* Initialize file operations module */
@@ -43,11 +37,11 @@ int fops_copy_or_move(void);
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
 int fops_copy(void);
 
-/* F6: Move selected files to other panel */
+/* Move selected files to other panel */
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
 int fops_move(void);
 
-/* F7: Delete selected files */
+/* F6: Delete selected files */
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
 int fops_delete(void);
 

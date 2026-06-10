@@ -308,10 +308,13 @@ int dlg_input(const char *title, const char *prompt, char *buf, uint16_t maxlen)
                     break;
 
                 default:
-                    /* Printable character - return to text editing */
+                    /* Printable character - return to text editing.
+                       Also clamp to the visible field width - there is
+                       no horizontal scrolling. */
                     if (key.code >= 32 && key.code < 127) {
                         in_buttons = 0;
-                        if (str_len(buf) < maxlen - 1) {
+                        if (str_len(buf) < maxlen - 1 &&
+                            str_len(buf) < input_w) {
                             /* Insert character */
                             uint16_t i;
                             uint16_t len = str_len(buf);
@@ -399,6 +402,15 @@ int dlg_drive_select(uint8_t current_drive)
 
     if (drive_count == 0) {
         return -1;
+    }
+
+    /* The window at y=8 fits 13 rows on a 25-line screen; entries past
+       that would be invisible but still selectable via Down/End */
+    if (drive_count > 13) {
+        drive_count = 13;
+    }
+    if (selected >= drive_count) {
+        selected = 0;
     }
 
     /* Open dialog */
@@ -573,9 +585,11 @@ int dlg_overwrite(const char *filename)
                     return DLG_YES;
                 case 'n':
                 case 'N':
-                case KEY_ESC:
                     dlg_close(&win);
                     return DLG_NO;
+                case KEY_ESC:
+                    dlg_close(&win);
+                    return DLG_ABORT;
                 case 'a':
                 case 'A':
                     dlg_close(&win);
@@ -584,7 +598,7 @@ int dlg_overwrite(const char *filename)
         } else if (key.type == KEY_EXTENDED) {
             if (key.code == KEY_F7 || key.code == KEY_F10) {
                 dlg_close(&win);
-                return DLG_NO;
+                return DLG_ABORT;
             }
         }
     }

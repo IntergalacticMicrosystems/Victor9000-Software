@@ -65,6 +65,48 @@ static const char *skip_whitespace(const char *s)
 }
 
 /*---------------------------------------------------------------------------
+ * key_is - Case-insensitive match of the key portion of an INI line
+ *---------------------------------------------------------------------------*/
+static bool_t key_is(const char *key, uint16_t key_len, const char *name)
+{
+    uint16_t i;
+
+    for (i = 0; i < key_len; i++) {
+        if (char_upper(key[i]) != char_upper(name[i])) {
+            return FALSE;
+        }
+    }
+
+    return (name[key_len] == '\0') ? TRUE : FALSE;
+}
+
+/*---------------------------------------------------------------------------
+ * parse_drive_value - Parse a drive letter value
+ *---------------------------------------------------------------------------*/
+static void parse_drive_value(uint8_t *drive, const char *value)
+{
+    char c = char_upper(*value);
+
+    if (c >= 'A' && c <= 'Z') {
+        *drive = c - 'A';
+    }
+}
+
+/*---------------------------------------------------------------------------
+ * parse_path_value - Copy a path value, stripping trailing CR/LF
+ *---------------------------------------------------------------------------*/
+static void parse_path_value(char *dst, const char *value)
+{
+    uint16_t len;
+
+    str_copy_n(dst, value, MAX_PATH_LEN);
+    len = str_len(dst);
+    while (len > 0 && (dst[len-1] == '\n' || dst[len-1] == '\r')) {
+        dst[--len] = '\0';
+    }
+}
+
+/*---------------------------------------------------------------------------
  * parse_line - Parse a configuration line
  *---------------------------------------------------------------------------*/
 static void parse_line(Config *cfg, const char *line)
@@ -72,6 +114,7 @@ static void parse_line(Config *cfg, const char *line)
     const char *key;
     const char *value;
     const char *p;
+    uint16_t key_len;
 
     /* Skip whitespace */
     line = skip_whitespace(line);
@@ -93,52 +136,31 @@ static void parse_line(Config *cfg, const char *line)
     while (*p && *p != '=' && *p != '\n' && *p != '\r') p++;
     if (*p != '=') return;
 
+    /* Key is everything before '=', minus trailing whitespace */
+    key_len = (uint16_t)(p - key);
+    while (key_len > 0 &&
+           (key[key_len-1] == ' ' || key[key_len-1] == '\t')) {
+        key_len--;
+    }
+
     /* Get value */
     value = skip_whitespace(p + 1);
 
     /* Match known keys */
-    if (str_cmp_i(key, "LeftDrive") == 0 || line[0] == 'L') {
-        /* Parse drive letter */
-        if (*value >= 'A' && *value <= 'Z') {
-            cfg->left_drive = *value - 'A';
-        } else if (*value >= 'a' && *value <= 'z') {
-            cfg->left_drive = *value - 'a';
-        }
+    if (key_is(key, key_len, "LeftDrive")) {
+        parse_drive_value(&cfg->left_drive, value);
     }
-    else if (str_cmp_i(key, "LeftPath") == 0 ||
-             (line[0] == 'L' && line[4] == 'P')) {
-        /* Copy path (strip trailing newline) */
-        str_copy_n(cfg->left_path, value, MAX_PATH_LEN - 1);
-        {
-            uint16_t len = str_len(cfg->left_path);
-            while (len > 0 &&
-                   (cfg->left_path[len-1] == '\n' ||
-                    cfg->left_path[len-1] == '\r')) {
-                cfg->left_path[--len] = '\0';
-            }
-        }
+    else if (key_is(key, key_len, "LeftPath")) {
+        parse_path_value(cfg->left_path, value);
     }
-    else if (str_cmp_i(key, "RightDrive") == 0 || line[0] == 'R') {
-        if (*value >= 'A' && *value <= 'Z') {
-            cfg->right_drive = *value - 'A';
-        } else if (*value >= 'a' && *value <= 'z') {
-            cfg->right_drive = *value - 'a';
-        }
+    else if (key_is(key, key_len, "RightDrive")) {
+        parse_drive_value(&cfg->right_drive, value);
     }
-    else if (str_cmp_i(key, "RightPath") == 0 ||
-             (line[0] == 'R' && line[5] == 'P')) {
-        str_copy_n(cfg->right_path, value, MAX_PATH_LEN - 1);
-        {
-            uint16_t len = str_len(cfg->right_path);
-            while (len > 0 &&
-                   (cfg->right_path[len-1] == '\n' ||
-                    cfg->right_path[len-1] == '\r')) {
-                cfg->right_path[--len] = '\0';
-            }
-        }
+    else if (key_is(key, key_len, "RightPath")) {
+        parse_path_value(cfg->right_path, value);
     }
-    else if (str_cmp_i(key, "ActivePanel") == 0 || line[0] == 'A') {
-        if (*value == '1' || *value == 'R' || *value == 'r') {
+    else if (key_is(key, key_len, "ActivePanel")) {
+        if (*value == '1' || char_upper(*value) == 'R') {
             cfg->active_panel = 1;
         } else {
             cfg->active_panel = 0;
@@ -156,6 +178,7 @@ bool_t config_load(Config *cfg)
     int16_t bytes;
     uint16_t line_pos = 0;
     uint16_t i;
+    bool_t got_data;
     char buf[512];
 
     /* Set defaults */
@@ -173,30 +196,81 @@ bool_t config_load(Config *cfg)
         return FALSE;
     }
 
-    /* Read file in one chunk */
-    bytes = dos_read(h, buf, sizeof(buf) - 1);
-    dos_close(h);
-
-    if (bytes <= 0) {
-        return FALSE;
-    }
-    buf[bytes] = '\0';
-
-    /* Parse line by line */
+    /* Read in chunks, splitting into lines as we go */
+    got_data = FALSE;
     line_pos = 0;
-    for (i = 0; i <= bytes; i++) {
-        if (buf[i] == '\n' || buf[i] == '\0') {
-            line[line_pos] = '\0';
-            parse_line(cfg, line);
-            line_pos = 0;
-        } else if (buf[i] != '\r') {
-            if (line_pos < sizeof(line) - 1) {
-                line[line_pos++] = buf[i];
+    for (;;) {
+        bytes = dos_read(h, buf, sizeof(buf));
+        if (bytes <= 0) break;
+        got_data = TRUE;
+
+        for (i = 0; i < (uint16_t)bytes; i++) {
+            if (buf[i] == '\n') {
+                line[line_pos] = '\0';
+                parse_line(cfg, line);
+                line_pos = 0;
+            } else if (buf[i] != '\r') {
+                if (line_pos < sizeof(line) - 1) {
+                    line[line_pos++] = buf[i];
+                }
             }
         }
     }
 
+    dos_close(h);
+
+    if (!got_data) {
+        return FALSE;
+    }
+
+    /* Last line may have no trailing newline */
+    if (line_pos > 0) {
+        line[line_pos] = '\0';
+        parse_line(cfg, line);
+    }
+
     return TRUE;
+}
+
+/*---------------------------------------------------------------------------
+ * write_str - Write a string, returning FALSE on error or short write
+ *---------------------------------------------------------------------------*/
+static bool_t write_str(dos_handle_t h, const char *s)
+{
+    uint16_t len = str_len(s);
+
+    return (dos_write(h, s, len) == (int16_t)len) ? TRUE : FALSE;
+}
+
+/*---------------------------------------------------------------------------
+ * write_setting - Write "key<value>\r\n" where value is one character
+ *---------------------------------------------------------------------------*/
+static bool_t write_char_setting(dos_handle_t h, const char *key, char value)
+{
+    char buf[40];
+    uint16_t len;
+
+    str_copy(buf, key);
+    len = str_len(buf);
+    buf[len] = value;
+    str_copy(&buf[len + 1], "\r\n");
+
+    return write_str(h, buf);
+}
+
+/*---------------------------------------------------------------------------
+ * write_path_setting - Write "key<path>\r\n"
+ *---------------------------------------------------------------------------*/
+static bool_t write_path_setting(dos_handle_t h, const char *key,
+                                 const char *path)
+{
+    char buf[96];
+
+    str_copy(buf, key);
+    str_copy(buf + str_len(buf), path);
+    str_copy(buf + str_len(buf), "\r\n");
+
+    return write_str(h, buf);
 }
 
 /*---------------------------------------------------------------------------
@@ -205,83 +279,22 @@ bool_t config_load(Config *cfg)
 bool_t config_save(const Config *cfg)
 {
     dos_handle_t h;
-    char buf[256];
-    uint16_t len;
-    int16_t written;
+    bool_t ok;
 
     h = dos_create(config_path, 0);
     if (h < 0) {
         return FALSE;
     }
 
-    /* Write header */
-    str_copy(buf, "; IGC Configuration\r\n[Settings]\r\n");
-    len = str_len(buf);
-    written = dos_write(h, buf, len);
-    if (written != len) {
-        dos_close(h);
-        return FALSE;
-    }
-
-    /* Left panel */
-    buf[0] = 'L';
-    buf[1] = 'e';
-    buf[2] = 'f';
-    buf[3] = 't';
-    buf[4] = 'D';
-    buf[5] = 'r';
-    buf[6] = 'i';
-    buf[7] = 'v';
-    buf[8] = 'e';
-    buf[9] = '=';
-    buf[10] = 'A' + cfg->left_drive;
-    buf[11] = '\r';
-    buf[12] = '\n';
-    buf[13] = '\0';
-    len = str_len(buf);
-    dos_write(h, buf, len);
-
-    str_copy(buf, "LeftPath=");
-    str_copy(buf + str_len(buf), cfg->left_path);
-    str_copy(buf + str_len(buf), "\r\n");
-    len = str_len(buf);
-    dos_write(h, buf, len);
-
-    /* Right panel */
-    buf[0] = 'R';
-    buf[1] = 'i';
-    buf[2] = 'g';
-    buf[3] = 'h';
-    buf[4] = 't';
-    buf[5] = 'D';
-    buf[6] = 'r';
-    buf[7] = 'i';
-    buf[8] = 'v';
-    buf[9] = 'e';
-    buf[10] = '=';
-    buf[11] = 'A' + cfg->right_drive;
-    buf[12] = '\r';
-    buf[13] = '\n';
-    buf[14] = '\0';
-    len = str_len(buf);
-    dos_write(h, buf, len);
-
-    str_copy(buf, "RightPath=");
-    str_copy(buf + str_len(buf), cfg->right_path);
-    str_copy(buf + str_len(buf), "\r\n");
-    len = str_len(buf);
-    dos_write(h, buf, len);
-
-    /* Active panel */
-    str_copy(buf, "ActivePanel=");
-    buf[str_len(buf)] = '0' + cfg->active_panel;
-    buf[str_len(buf) + 1] = '\0';
-    str_copy(buf + str_len(buf), "\r\n");
-    len = str_len(buf);
-    dos_write(h, buf, len);
+    ok = write_str(h, "; IGC Configuration\r\n[Settings]\r\n");
+    ok = ok && write_char_setting(h, "LeftDrive=", 'A' + cfg->left_drive);
+    ok = ok && write_path_setting(h, "LeftPath=", cfg->left_path);
+    ok = ok && write_char_setting(h, "RightDrive=", 'A' + cfg->right_drive);
+    ok = ok && write_path_setting(h, "RightPath=", cfg->right_path);
+    ok = ok && write_char_setting(h, "ActivePanel=", '0' + cfg->active_panel);
 
     dos_close(h);
-    return TRUE;
+    return ok;
 }
 
 /*---------------------------------------------------------------------------

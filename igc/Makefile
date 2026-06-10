@@ -83,12 +83,14 @@ $(BINDIR)/$(TARGET).exe: $(OBJS)
 	@echo "NAME $@" > $(OBJDIR)/link.lnk
 	@echo "SYSTEM dos" >> $(OBJDIR)/link.lnk
 	@echo "OPTION quiet" >> $(OBJDIR)/link.lnk
-	@echo "OPTION stack=4096" >> $(OBJDIR)/link.lnk
+	@echo "OPTION stack=8192" >> $(OBJDIR)/link.lnk
+	@echo "OPTION map=$(BINDIR)/$(TARGET).map" >> $(OBJDIR)/link.lnk
 	@for obj in $(OBJS); do echo "FILE $$obj" >> $(OBJDIR)/link.lnk; done
 	$(LD) @$(OBJDIR)/link.lnk
 
-# Compile pattern rule
-$(OBJDIR)/%.obj: $(SRCDIR)/%.c | dirs
+# Compile pattern rule. Every object depends on every header - with 13
+# files a few spurious rebuilds beat maintaining per-file lists by hand.
+$(OBJDIR)/%.obj: $(SRCDIR)/%.c $(SRCDIR)/*.h | dirs
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -fo=$@ $<
 
@@ -101,46 +103,11 @@ clean:
 	rm -f $(BINDIR)/$(TARGET).exe $(BINDIR)/$(TARGET).map
 	rm -f $(BINDIR)/keytest.exe
 
+# Like clean, but also removes the build directories. bin/igc.exe is
+# tracked in git, so only obj/ is removed wholesale.
 distclean: clean
-	rm -rf $(OBJDIR) $(BINDIR)
-
-#-------------------------------------------------------------------------------
-# Dependencies (manual for now, could use makedepend)
-#-------------------------------------------------------------------------------
-
-$(OBJDIR)/main.obj: $(SRCDIR)/main.c $(SRCDIR)/igc.h $(SRCDIR)/mem.h \
-                    $(SRCDIR)/screen.h $(SRCDIR)/keyboard.h $(SRCDIR)/dosapi.h \
-                    $(SRCDIR)/panel.h $(SRCDIR)/ui.h $(SRCDIR)/dialog.h $(SRCDIR)/fileops.h
-
-$(OBJDIR)/mem.obj: $(SRCDIR)/mem.c $(SRCDIR)/mem.h $(SRCDIR)/igc.h
-
-$(OBJDIR)/screen.obj: $(SRCDIR)/screen.c $(SRCDIR)/screen.h $(SRCDIR)/igc.h
-
-$(OBJDIR)/keyboard.obj: $(SRCDIR)/keyboard.c $(SRCDIR)/keyboard.h $(SRCDIR)/igc.h
-
-$(OBJDIR)/dosapi.obj: $(SRCDIR)/dosapi.c $(SRCDIR)/dosapi.h $(SRCDIR)/igc.h
-
-$(OBJDIR)/panel.obj: $(SRCDIR)/panel.c $(SRCDIR)/panel.h $(SRCDIR)/igc.h \
-                     $(SRCDIR)/dosapi.h $(SRCDIR)/mem.h $(SRCDIR)/util.h
-
-$(OBJDIR)/ui.obj: $(SRCDIR)/ui.c $(SRCDIR)/ui.h $(SRCDIR)/igc.h \
-                  $(SRCDIR)/screen.h $(SRCDIR)/panel.h $(SRCDIR)/util.h
-
-$(OBJDIR)/util.obj: $(SRCDIR)/util.c $(SRCDIR)/util.h $(SRCDIR)/igc.h
-
-$(OBJDIR)/dialog.obj: $(SRCDIR)/dialog.c $(SRCDIR)/dialog.h $(SRCDIR)/igc.h \
-                      $(SRCDIR)/screen.h $(SRCDIR)/keyboard.h $(SRCDIR)/mem.h
-
-$(OBJDIR)/fileops.obj: $(SRCDIR)/fileops.c $(SRCDIR)/fileops.h $(SRCDIR)/igc.h \
-                       $(SRCDIR)/panel.h $(SRCDIR)/dialog.h $(SRCDIR)/dosapi.h \
-                       $(SRCDIR)/mem.h $(SRCDIR)/ui.h $(SRCDIR)/util.h
-
-$(OBJDIR)/editor.obj: $(SRCDIR)/editor.c $(SRCDIR)/editor.h $(SRCDIR)/igc.h \
-                      $(SRCDIR)/screen.h $(SRCDIR)/keyboard.h $(SRCDIR)/dosapi.h \
-                      $(SRCDIR)/mem.h $(SRCDIR)/ui.h $(SRCDIR)/util.h $(SRCDIR)/dialog.h
-
-$(OBJDIR)/config.obj: $(SRCDIR)/config.c $(SRCDIR)/config.h $(SRCDIR)/igc.h \
-                      $(SRCDIR)/panel.h $(SRCDIR)/dosapi.h $(SRCDIR)/util.h
+	rm -rf $(OBJDIR)
+	-rmdir $(BINDIR) 2>/dev/null
 
 #-------------------------------------------------------------------------------
 # Keytest utility (separate build)
@@ -166,13 +133,33 @@ $(OBJDIR)/keytest.obj: $(SRCDIR)/keytest.c | dirs
 MAME_DIR ?= /root/bldmame1
 DISK_IMG ?= $(MAME_DIR)/vichd31.img
 DEST_PARTITION ?= 1
-DEST_DIR ?= 
+DEST_DIR ?=
 
-.PHONY: deploy
+# Destination path inside the image ("\FOO\IGC.EXE", or "\IGC.EXE" when
+# DEST_DIR is empty - avoid a doubled backslash)
+ifeq ($(strip $(DEST_DIR)),)
+DEST_PATH = \\$(TARGET).EXE
+else
+DEST_PATH = \\$(DEST_DIR)\\$(TARGET).EXE
+endif
+
+.PHONY: deploy deploy-keytest
 
 deploy: $(BINDIR)/$(TARGET).exe
+	@test -d $(MAME_DIR) || { \
+		echo "MAME_DIR=$(MAME_DIR) not found - run with MAME_DIR=<path>"; \
+		exit 1; }
 	@echo "Deploying to MAME disk image..."
 	cd $(MAME_DIR) && python3 -m vtg_image_util copy \
 		$(CURDIR)/$(BINDIR)/$(TARGET).exe \
-		$(DISK_IMG):$(DEST_PARTITION):\\$(DEST_DIR)\\$(TARGET).EXE
-	@echo "Deployed to $(DISK_IMG):$(DEST_PARTITION):\\$(DEST_DIR)\\$(TARGET).EXE"
+		$(DISK_IMG):$(DEST_PARTITION):$(DEST_PATH)
+	@echo "Deployed to $(DISK_IMG):$(DEST_PARTITION):$(DEST_PATH)"
+
+deploy-keytest: $(BINDIR)/keytest.exe
+	@test -d $(MAME_DIR) || { \
+		echo "MAME_DIR=$(MAME_DIR) not found - run with MAME_DIR=<path>"; \
+		exit 1; }
+	@echo "Deploying keytest to MAME disk image..."
+	cd $(MAME_DIR) && python3 -m vtg_image_util copy \
+		$(CURDIR)/$(BINDIR)/keytest.exe \
+		$(DISK_IMG):$(DEST_PARTITION):\\KEYTEST.EXE

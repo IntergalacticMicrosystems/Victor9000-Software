@@ -218,6 +218,7 @@ typedef uint8_t bool_t;
  *---------------------------------------------------------------------------*/
 #define MAX_PATH_LEN    65          /* DOS path limit */
 #define MAX_FILENAME    13          /* 8.3 + null */
+#define MAX_FULL_PATH   84          /* "X:\" + path + "\" + 8.3 name + null */
 #define MAX_DRIVE       26          /* A-Z */
 
 /*---------------------------------------------------------------------------
