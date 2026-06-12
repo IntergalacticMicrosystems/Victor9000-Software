@@ -9,3 +9,7 @@ IGC ~ Volkov / Midnight / Norton Commander-like 2-pane file manager
 **key-remover**  
 
 3D Printed piece to help removing keys from a Victor keyboard backplate.  
+
+**v9kdiag**  
+
+Diagnostic bits.  So far just a new RAM test diag ROM
