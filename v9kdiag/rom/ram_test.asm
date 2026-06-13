@@ -333,6 +333,13 @@ test_low64k:
     ja .go
     ret                           ; only 64K present: nowhere to host stack/vars
 .go:
+    ; show segment 0000 in the TESTING SEG field for the duration of phase L
+    ; (DS=0 still, so g_attr/g_cbase are valid; print_hex16 saves/restores ES).
+    ; AX/CX/DX/SI/DI are all reloaded below, so clobbering them here is fine.
+    xor ax, ax
+    mov dx, 060Dh                  ; row 6 col 13 (same field phase H uses)
+    call print_hex16
+
     ; NOTE: this path does NOT return via RET. The caller's return address lives
     ; on the low stack (0:~03FAh), which is inside the RAM we are about to test
     ; and overwrite. Instead we finish by resetting the stack and jumping back
