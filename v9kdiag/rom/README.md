@@ -1,7 +1,5 @@
 # Victor 9000 RAM Test ROM
 
-## ~ Initial Version, haven't tested on hardware yet ~
-
 A bare-metal 4K diagnostic ROM for the Victor 9000 (8088). It replaces the
 **FF000 system ROM chip** and does nothing but continuously test main DRAM,
 showing live results on the built-in CRT. No DOS, no BIOS, no interrupts — the
