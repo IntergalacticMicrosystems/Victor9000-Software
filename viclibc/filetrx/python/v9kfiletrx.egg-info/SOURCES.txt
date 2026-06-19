@@ -1,0 +1,12 @@
+setup.py
+v9kfiletrx/__init__.py
+v9kfiletrx/compress.py
+v9kfiletrx/crc32.py
+v9kfiletrx/filetrx.py
+v9kfiletrx/protocol.py
+v9kfiletrx.egg-info/PKG-INFO
+v9kfiletrx.egg-info/SOURCES.txt
+v9kfiletrx.egg-info/dependency_links.txt
+v9kfiletrx.egg-info/entry_points.txt
+v9kfiletrx.egg-info/requires.txt
+v9kfiletrx.egg-info/top_level.txt

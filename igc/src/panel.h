@@ -43,6 +43,7 @@ typedef struct {
     uint16_t cursor;            /* Current cursor position */
     uint16_t sel_count;         /* Number of selected files */
     FileList files;             /* Dynamic file list */
+    uint8_t  backend;           /* PANEL_DOS or PANEL_SERIAL (see serialfs.h) */
 } Panel;
 
 /*---------------------------------------------------------------------------
@@ -90,6 +91,10 @@ void panel_switch(void);
 
 /* Read directory into panel */
 int panel_read_dir(Panel *p);
+
+/* Sort a panel's file list (".." first, directories, then alphabetical).
+ * Exposed so the serial backend can match the local panel's ordering. */
+void panel_sort(Panel *p);
 
 /* Refresh panel (re-read current directory) */
 int panel_refresh(Panel *p);

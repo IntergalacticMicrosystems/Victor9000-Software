@@ -381,10 +381,13 @@ int dlg_input(const char *title, const char *prompt, char *buf, uint16_t maxlen)
 /*---------------------------------------------------------------------------
  * dlg_drive_select - Drive selection dialog
  *---------------------------------------------------------------------------*/
+/* Pseudo "drive" value marking the serial-server entry in the drive list. */
+#define SFS_DRIVE_SENTINEL  0xFE
+
 int dlg_drive_select(uint8_t current_drive)
 {
     DialogWindow win;
-    uint8_t drives[26];
+    uint8_t drives[27];     /* up to 26 real drives + the serial entry */
     uint8_t drive_count = 0;
     uint8_t i;
     uint8_t selected = 0;
@@ -399,6 +402,9 @@ int dlg_drive_select(uint8_t current_drive)
             drives[drive_count++] = i;
         }
     }
+
+    /* Offer the serial file server (COM1) as a final pseudo-entry. */
+    drives[drive_count++] = SFS_DRIVE_SENTINEL;
 
     if (drive_count == 0) {
         return -1;
@@ -425,6 +431,10 @@ int dlg_drive_select(uint8_t current_drive)
         for (i = 0; i < drive_count; i++) {
             uint8_t attr = (i == selected) ? ATTR_DIM_REV : ATTR_DIM;
             char label[4];
+            if (drives[i] == SFS_DRIVE_SENTINEL) {
+                scr_puts_n_xy(win.x + 2, win.y + 1 + i, " Serial A", 16, attr);
+                continue;
+            }
             label[0] = ' ';
             label[1] = 'A' + drives[i];
             label[2] = ':';
@@ -437,6 +447,10 @@ int dlg_drive_select(uint8_t current_drive)
         if (key.type == KEY_ASCII) {
             switch (key.code) {
                 case KEY_ENTER:
+                    if (drives[selected] == SFS_DRIVE_SENTINEL) {
+                        dlg_close(&win);
+                        return DLG_DRIVE_SERIAL;
+                    }
                     /* Check if drive is ready before selecting */
                     if (!dos_is_drive_ready(drives[selected])) {
                         dlg_alert("Error", "Drive not ready");

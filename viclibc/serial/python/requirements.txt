@@ -1,0 +1,8 @@
+# Victor 9000 Serial Communications - Python Dependencies
+
+# Required
+pyserial>=3.5
+
+# Development (optional)
+pytest>=7.0
+pytest-cov>=4.0

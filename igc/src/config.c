@@ -6,6 +6,7 @@
 #include "panel.h"
 #include "dosapi.h"
 #include "util.h"
+#include "serialfs.h"
 
 /*---------------------------------------------------------------------------
  * Configuration file path
@@ -319,9 +320,27 @@ void config_apply(const Config *cfg)
  *---------------------------------------------------------------------------*/
 void config_build(Config *cfg)
 {
-    cfg->left_drive = g_left_panel.drive;
-    str_copy(cfg->left_path, g_left_panel.path);
-    cfg->right_drive = g_right_panel.drive;
-    str_copy(cfg->right_path, g_right_panel.path);
+    /* A serial panel has no meaningful drive: persisting its drive 0 would
+       restore as an empty floppy A: on the next launch (a "not ready" critical
+       error). Save a safe local drive + root instead; the user re-selects
+       Serial A by hand (we never auto-reconnect the serial link on load). */
+    if (g_left_panel.backend == PANEL_SERIAL) {
+        cfg->left_drive = dos_get_drive();
+        cfg->left_path[0] = '\\';
+        cfg->left_path[1] = '\0';
+    } else {
+        cfg->left_drive = g_left_panel.drive;
+        str_copy(cfg->left_path, g_left_panel.path);
+    }
+
+    if (g_right_panel.backend == PANEL_SERIAL) {
+        cfg->right_drive = dos_get_drive();
+        cfg->right_path[0] = '\\';
+        cfg->right_path[1] = '\0';
+    } else {
+        cfg->right_drive = g_right_panel.drive;
+        str_copy(cfg->right_path, g_right_panel.path);
+    }
+
     cfg->active_panel = g_active_panel;
 }

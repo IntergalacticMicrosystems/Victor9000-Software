@@ -7,6 +7,7 @@
 #include "util.h"
 #include "mem.h"
 #include "dosapi.h"
+#include "serialfs.h"
 
 /*---------------------------------------------------------------------------
  * Constants
@@ -14,6 +15,17 @@
 #define LEFT_X      0
 #define RIGHT_X     40
 #define INNER_WIDTH 38      /* Width inside panel border */
+
+/* Progress-bar geometry (status line). Kept here so both the full draw and the
+ * lightweight tick agree on cell positions. */
+#define PROG_BAR_X   54     /* first of the 20 bar cells */
+#define PROG_BAR_W   20
+#define PROG_PCT_X   76     /* "100%" field */
+
+/* Last bar fill / percentage actually painted, so ui_progress_tick can repaint
+ * only what changed. Set by ui_show_progress (the full draw establishes them). */
+static uint8_t g_prog_bar_len;
+static uint8_t g_prog_pct;
 
 /*---------------------------------------------------------------------------
  * ui_draw_frame - Draw complete UI frame
@@ -92,20 +104,39 @@ void ui_draw_panel_path(Panel *p, uint8_t x_offset, bool_t active)
     /* Fill title area with horizontal lines */
     scr_hline(start_col, ROW_TITLE, end_col - start_col + 1, BOX_HORIZ, ATTR_DIM);
 
-    /* Build path string: "D:\path" */
-    buf[0] = 'A' + p->drive;
-    buf[1] = ':';
-    buf[2] = '\\';
-
-    if (p->path[0] == '\\') {
-        str_copy_n(&buf[3], &p->path[1], 20);
+    /* Build path string. A serial panel shows the link ("SER:\path") rather
+       than a drive letter, and has no DOS free-space figure. */
+    if (p->backend == PANEL_SERIAL) {
+        buf[0] = 'S';
+        buf[1] = 'E';
+        buf[2] = 'R';
+        buf[3] = ':';
+        buf[4] = '\\';
+        if (p->path[0] == '\\') {
+            str_copy_n(&buf[5], &p->path[1], 18);
+        } else {
+            str_copy_n(&buf[5], p->path, 18);
+        }
     } else {
-        str_copy_n(&buf[3], p->path, 20);
+        buf[0] = 'A' + p->drive;
+        buf[1] = ':';
+        buf[2] = '\\';
+        if (p->path[0] == '\\') {
+            str_copy_n(&buf[3], &p->path[1], 20);
+        } else {
+            str_copy_n(&buf[3], p->path, 20);
+        }
     }
     path_len = str_len(buf);
 
     /* Draw path (one position after the border/separator) */
     scr_puts_n_xy(start_col + 1, ROW_TITLE, buf, path_len, path_attr);
+
+    /* Serial panels have no local free-space figure (and querying drive 0
+       would hit an empty floppy A: with a "not ready" critical error). */
+    if (p->backend == PANEL_SERIAL) {
+        return;
+    }
 
     /* Draw free space (right-justified before panel separator) */
     free_kb = dos_get_free_space(p->drive);
@@ -386,12 +417,13 @@ void ui_show_progress(const char *title, const char *filename,
     scr_puts_xy(1, ROW_STATUS, buf, ATTR_DIM);
 
     /* Draw progress bar */
-    bar_len = (pct * 20) / 100;
-    scr_putc_xy(53, ROW_STATUS, '[', ATTR_DIM);
-    for (i = 0; i < 20; i++) {
-        scr_putc_xy(54 + i, ROW_STATUS, (i < bar_len) ? 0xDB : 0xB0, ATTR_DIM);
+    bar_len = (pct * PROG_BAR_W) / 100;
+    scr_putc_xy(PROG_BAR_X - 1, ROW_STATUS, '[', ATTR_DIM);
+    for (i = 0; i < PROG_BAR_W; i++) {
+        scr_putc_xy(PROG_BAR_X + i, ROW_STATUS,
+                    (i < bar_len) ? 0xDB : 0xB0, ATTR_DIM);
     }
-    scr_putc_xy(74, ROW_STATUS, ']', ATTR_DIM);
+    scr_putc_xy(PROG_BAR_X + PROG_BAR_W, ROW_STATUS, ']', ATTR_DIM);
 
     /* Show percentage (columns 76-79, so "100%" fits on screen) */
     buf[0] = '0' + (pct / 100) % 10;
@@ -403,7 +435,65 @@ void ui_show_progress(const char *title, const char *filename,
         buf[0] = ' ';
         if (buf[1] == '0') buf[1] = ' ';
     }
-    scr_puts_xy(76, ROW_STATUS, buf, ATTR_DIM);
+    scr_puts_xy(PROG_PCT_X, ROW_STATUS, buf, ATTR_DIM);
+
+    /* Remember what we painted so a following ui_progress_tick repaints only
+     * the delta. */
+    g_prog_bar_len = bar_len;
+    g_prog_pct = pct;
+}
+
+/*---------------------------------------------------------------------------
+ * ui_progress_tick - Cheap in-place progress update
+ *
+ * Updates only the bar cells that flipped since the last paint plus the
+ * percentage digits - typically under a dozen video writes. The caller must
+ * have drawn the frame once with ui_show_progress first (which sets the title,
+ * filename and the delta baseline). This is deliberately tiny: it runs in the
+ * gap between serial packets, and a full redraw there starves the Victor's
+ * polled receive long enough to overrun its 3-byte FIFO at 38400.
+ *---------------------------------------------------------------------------*/
+void ui_progress_tick(uint16_t current, uint16_t total)
+{
+    char buf[5];
+    uint8_t pct;
+    uint8_t bar_len;
+    uint8_t i;
+
+    if (total == 0) {
+        return;
+    }
+    {
+        uint32_t p = (uint32_t)current * 100L / total;
+        pct = (p > 100L) ? 100 : (uint8_t)p;
+    }
+    if (pct == g_prog_pct) {
+        return;                 /* nothing visible changed - stay off the wire */
+    }
+
+    bar_len = (pct * PROG_BAR_W) / 100;
+    if (bar_len > g_prog_bar_len) {
+        for (i = g_prog_bar_len; i < bar_len; i++) {
+            scr_putc_xy(PROG_BAR_X + i, ROW_STATUS, 0xDB, ATTR_DIM);
+        }
+    } else if (bar_len < g_prog_bar_len) {
+        for (i = bar_len; i < g_prog_bar_len; i++) {
+            scr_putc_xy(PROG_BAR_X + i, ROW_STATUS, 0xB0, ATTR_DIM);
+        }
+    }
+    g_prog_bar_len = bar_len;
+    g_prog_pct = pct;
+
+    buf[0] = '0' + (pct / 100) % 10;
+    buf[1] = '0' + (pct / 10) % 10;
+    buf[2] = '0' + pct % 10;
+    buf[3] = '%';
+    buf[4] = '\0';
+    if (buf[0] == '0') {
+        buf[0] = ' ';
+        if (buf[1] == '0') buf[1] = ' ';
+    }
+    scr_puts_xy(PROG_PCT_X, ROW_STATUS, buf, ATTR_DIM);
 }
 
 /*---------------------------------------------------------------------------

@@ -8,6 +8,7 @@
 #include "util.h"
 #include "dosapi.h"
 #include "ui.h"
+#include "serialfs.h"
 
 /*---------------------------------------------------------------------------
  * Global Panel State
@@ -68,6 +69,14 @@ static void sort_files(FileList *fl)
 }
 
 /*---------------------------------------------------------------------------
+ * panel_sort - Public wrapper so other backends share the sort order
+ *---------------------------------------------------------------------------*/
+void panel_sort(Panel *p)
+{
+    sort_files(&p->files);
+}
+
+/*---------------------------------------------------------------------------
  * panel_init - Initialize a panel with given capacity
  *---------------------------------------------------------------------------*/
 bool_t panel_init(Panel *p, uint16_t capacity)
@@ -79,6 +88,7 @@ bool_t panel_init(Panel *p, uint16_t capacity)
     p->top = 0;
     p->cursor = 0;
     p->sel_count = 0;
+    p->backend = PANEL_DOS;
 
     bytes = (uint32_t)capacity * sizeof(FileEntry);
     p->files.entries = (FileEntry __far *)mem_alloc(bytes);
@@ -188,6 +198,11 @@ int panel_read_dir(Panel *p)
     FileEntry __far *entry;
     uint16_t count = 0;
     int result;
+
+    /* A serial panel reads its listing from the remote file server. */
+    if (p->backend == PANEL_SERIAL) {
+        return serialfs_read_dir(p);
+    }
 
     /* Show loading indicator */
     ui_status("Reading directory...");
@@ -339,6 +354,11 @@ int panel_go_parent(Panel *p)
  *---------------------------------------------------------------------------*/
 int panel_set_drive(Panel *p, uint8_t drive)
 {
+    /* Selecting a real drive returns the panel to the local DOS backend. */
+    if (p->backend == PANEL_SERIAL) {
+        serialfs_disconnect();
+        p->backend = PANEL_DOS;
+    }
     p->drive = drive;
     p->path[0] = '\0';
     p->cursor = 0;

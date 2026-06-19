@@ -71,6 +71,11 @@ void ui_hide_loading(void);
 void ui_show_progress(const char *title, const char *filename,
                       uint16_t current, uint16_t total);
 
+/* Cheap in-place progress update - repaints only the changed bar cells and the
+ * percentage. Requires a prior ui_show_progress to lay down the frame. Safe to
+ * call between serial packets (a handful of video writes). */
+void ui_progress_tick(uint16_t current, uint16_t total);
+
 /* Hide progress display */
 void ui_hide_progress(void);
 

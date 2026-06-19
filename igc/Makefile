@@ -47,6 +47,25 @@ CFLAGS = -0 -mc -s -os -d0 -w4 -e25 -zq -bt=dos -fpc -j -i=$(SRCDIR)
 # CFLAGS = -0 -mc -d2 -w4 -e25 -zq -bt=dos -fpc -j -i=$(SRCDIR)
 
 #-------------------------------------------------------------------------------
+# viclibc (vetted polled serial + packet + file-transfer code, reused by the
+# serial file-server backend). Built from source under igc's memory model, but
+# 1-byte packed (-zp1) so the on-wire structs stay byte-compatible with the
+# Python server. Override VICLIBC if the repo lives elsewhere.
+#-------------------------------------------------------------------------------
+VICLIBC ?= ../viclibc
+VIC_INC = -i=$(VICLIBC)/serial/include -i=$(VICLIBC)/filetrx/include
+VIC_CFLAGS = $(CFLAGS) -zp1 $(VIC_INC)
+
+# serialfs.c (in src/) includes the viclibc headers, so it needs their path.
+CFLAGS += $(VIC_INC)
+
+VIC_SERIAL_SRCS  = serial.c serial_hw.c serial_buffer.c serial_isr.c packet.c
+VIC_FILETRX_SRCS = filetrx.c ftx_send.c ftx_recv.c ftx_dosfile.c \
+                   ftx_compress.c ftx_crc32.c
+VIC_OBJS = $(addprefix $(OBJDIR)/vic_,$(VIC_SERIAL_SRCS:.c=.obj)) \
+           $(addprefix $(OBJDIR)/vic_,$(VIC_FILETRX_SRCS:.c=.obj))
+
+#-------------------------------------------------------------------------------
 # Source and Object Files
 #-------------------------------------------------------------------------------
 # Explicitly list sources to avoid including test programs like keytest.c
@@ -61,7 +80,8 @@ SRCS = $(SRCDIR)/main.c \
        $(SRCDIR)/dialog.c \
        $(SRCDIR)/fileops.c \
        $(SRCDIR)/editor.c \
-       $(SRCDIR)/config.c
+       $(SRCDIR)/config.c \
+       $(SRCDIR)/serialfs.c
 
 OBJS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.obj,$(SRCS))
 
@@ -78,14 +98,14 @@ dirs:
 	@mkdir -p $(OBJDIR) $(BINDIR)
 
 # Link - generate linker response file for complex commands
-$(BINDIR)/$(TARGET).exe: $(OBJS)
+$(BINDIR)/$(TARGET).exe: $(OBJS) $(VIC_OBJS)
 	@echo "Linking $(TARGET).exe..."
 	@echo "NAME $@" > $(OBJDIR)/link.lnk
 	@echo "SYSTEM dos" >> $(OBJDIR)/link.lnk
 	@echo "OPTION quiet" >> $(OBJDIR)/link.lnk
 	@echo "OPTION stack=8192" >> $(OBJDIR)/link.lnk
 	@echo "OPTION map=$(BINDIR)/$(TARGET).map" >> $(OBJDIR)/link.lnk
-	@for obj in $(OBJS); do echo "FILE $$obj" >> $(OBJDIR)/link.lnk; done
+	@for obj in $(OBJS) $(VIC_OBJS); do echo "FILE $$obj" >> $(OBJDIR)/link.lnk; done
 	$(LD) @$(OBJDIR)/link.lnk
 
 # Compile pattern rule. Every object depends on every header - with 13
@@ -93,6 +113,16 @@ $(BINDIR)/$(TARGET).exe: $(OBJS)
 $(OBJDIR)/%.obj: $(SRCDIR)/%.c $(SRCDIR)/*.h | dirs
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -fo=$@ $<
+
+# viclibc objects: built -zp1 with the viclibc include paths. Two rules for the
+# two source dirs; make picks whichever prerequisite exists.
+$(OBJDIR)/vic_%.obj: $(VICLIBC)/serial/src/%.c | dirs
+	@echo "Compiling viclibc $<..."
+	$(CC) $(VIC_CFLAGS) -fo=$@ $<
+
+$(OBJDIR)/vic_%.obj: $(VICLIBC)/filetrx/src/%.c | dirs
+	@echo "Compiling viclibc $<..."
+	$(CC) $(VIC_CFLAGS) -fo=$@ $<
 
 #-------------------------------------------------------------------------------
 # Clean

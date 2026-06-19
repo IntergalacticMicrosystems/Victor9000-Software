@@ -19,6 +19,7 @@
 - **Dynamic memory scaling** - Works on systems from 128KB to 512KB+ RAM
 - **Fast display** - Direct VRAM access for responsive UI
 - **Session persistence** - Remembers your last directory locations
+- **Serial file transfer** - Browse a directory on a modern PC over a serial cable and copy files to/from the Victor
 
 ## Keyboard Controls
 
@@ -46,6 +47,51 @@
 | F6 | Delete |
 | F7 | Quit (F10 also quits) |
 | F8 | Rename |
+
+## Serial File Transfer
+
+IGC can browse a directory on a modern PC over a direct RS-232 cable and copy
+files in both directions — handy for moving programs and data on/off the Victor
+without floppies.
+
+### On the Victor (client)
+
+Press **F1** (Change drive) on a pane and select **Serial A** at the bottom of
+the drive list. The pane then browses the directory served by the PC and
+supports the usual operations: browse, view/edit, copy in/out (F5), delete (F6),
+mkdir (F2), and rename (F8). The path is shown as `SER:\...`. Remote files are
+presented as uppercase 8.3 names (long/mixed-case names are mangled to
+`NAME~1.EXT`).
+
+The link runs **8N1 at 38400 baud with RTS/CTS hardware flow control**.
+
+### On the PC (server)
+
+The PC-side server, `igcfs.py`, lives in [`tools/serialfs/`](tools/serialfs/).
+It serves one directory (sandboxed to it) to the Victor.
+
+```sh
+cd tools/serialfs
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# Serve /srv/victor over /dev/ttyUSB0 at 38400 baud
+.venv/bin/python igcfs.py --root /srv/victor --dev /dev/ttyUSB0 --baud 38400 -v
+```
+
+| Option | Meaning |
+|--------|---------|
+| `--root` | Directory to serve (server is sandboxed to it) |
+| `--dev` | Serial device (default `/dev/ttyUSB0`) |
+| `--baud` | Line rate (default 38400; must match the Victor's pane setting) |
+| `--no-rtscts` | Disable RTS/CTS flow control (listings still work; transfers may not) |
+| `-v` | Verbose request log |
+
+> **Cable note:** the Victor uses *polled* serial and gates the sender with RTS
+> between packets, so the cable must carry the handshake lines (RTS/CTS) for
+> reliable multi-packet file transfers. A plain TX/RX/GND cable can list a
+> directory but may drop transfers — see [`tools/serialfs/README.md`](tools/serialfs/README.md)
+> for the full protocol and baud-rate notes.
 
 ## Installation
 

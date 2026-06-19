@@ -65,7 +65,9 @@ int dlg_input(const char *title, const char *prompt, char *buf, uint16_t maxlen)
  *---------------------------------------------------------------------------*/
 
 /* Drive selection dialog */
-/* Returns selected drive (0=A, 1=B, etc.) or -1 if cancelled */
+/* Returns selected drive (0=A, 1=B, etc.), DLG_DRIVE_SERIAL for the serial
+ * file server, or -1 if cancelled */
+#define DLG_DRIVE_SERIAL  100
 int dlg_drive_select(uint8_t current_drive);
 
 /* Copy/Move confirmation dialog */

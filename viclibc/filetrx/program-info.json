@@ -1,0 +1,5 @@
+{
+  "system": "victor9k",
+  "executable": "ftxtest.exe",
+  "build-command": "wmake"
+}

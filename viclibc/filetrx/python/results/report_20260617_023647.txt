@@ -1,0 +1,85 @@
+======================================================================
+File Transfer Test Report
+Generated: 2026-06-17 02:36:47
+======================================================================
+
+CONFIGURATION
+----------------------------------------
+  Iterations: 1
+  Baud Rate: 9600
+  Connection: REAL_SERIAL
+  Error Tests: Yes
+  Compression Modes: None, RLE
+
+======================================================================
+SUMMARY
+======================================================================
+  Total Tests: 50
+  Passed: 50
+  Failed: 0
+  Pass Rate: 100.0%
+  Average Speed: 400 B/s
+  Total Data: 824,200 bytes
+  Total Retries: 0
+  Test Duration: 1652.1s
+
+  Compression None: 25/25 passed
+  Compression RLE: 25/25 passed
+
+======================================================================
+DETAILED RESULTS
+======================================================================
+[PASS] PC->Victor:test_small.bin:comp=0 iter=1 bytes=500 speed=83B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=0 iter=1 bytes=5120 speed=398B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=0 iter=1 bytes=20480 speed=581B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=0 iter=1 bytes=51200 speed=640B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=0 iter=1 bytes=5120 speed=402B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=0 iter=1 bytes=500 speed=50B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=0 iter=1 bytes=5120 speed=304B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=0 iter=1 bytes=20480 speed=522B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=0 iter=1 bytes=51200 speed=610B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=0 iter=1 bytes=5120 speed=306B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=0 iter=1 bytes=500 speed=83B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=0 iter=1 bytes=5120 speed=399B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=0 iter=1 bytes=20480 speed=581B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=0 iter=1 bytes=51200 speed=641B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=0 iter=1 bytes=5120 speed=402B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=0 iter=1 bytes=500 speed=50B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=0 iter=1 bytes=5120 speed=206B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=0 iter=1 bytes=20480 speed=434B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=0 iter=1 bytes=51200 speed=557B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=0 iter=1 bytes=5120 speed=207B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=0 iter=1 bytes=500 speed=83B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=0 iter=1 bytes=5120 speed=399B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=0 iter=1 bytes=20480 speed=523B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=0 iter=1 bytes=51200 speed=583B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=0 iter=1 bytes=5120 speed=402B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=1 iter=1 bytes=500 speed=83B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=1 iter=1 bytes=5120 speed=399B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=1 iter=1 bytes=20480 speed=582B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=1 iter=1 bytes=51200 speed=641B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=1 iter=1 bytes=5120 speed=843B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=1 iter=1 bytes=500 speed=50B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=1 iter=1 bytes=5120 speed=304B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=1 iter=1 bytes=20480 speed=522B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=1 iter=1 bytes=51200 speed=610B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=1 iter=1 bytes=5120 speed=508B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=1 iter=1 bytes=500 speed=83B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=1 iter=1 bytes=5120 speed=399B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=1 iter=1 bytes=20480 speed=581B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=1 iter=1 bytes=51200 speed=640B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=1 iter=1 bytes=5120 speed=841B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=1 iter=1 bytes=500 speed=50B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=1 iter=1 bytes=5120 speed=206B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=1 iter=1 bytes=20480 speed=434B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=1 iter=1 bytes=51200 speed=557B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=1 iter=1 bytes=5120 speed=286B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=1 iter=1 bytes=500 speed=83B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=1 iter=1 bytes=5120 speed=304B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=1 iter=1 bytes=20480 speed=474B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=1 iter=1 bytes=51200 speed=583B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=1 iter=1 bytes=5120 speed=514B/s retries=0
+
+======================================================================
+FINAL STATUS: ALL TESTS PASSED
+======================================================================

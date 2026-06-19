@@ -1,0 +1,45 @@
+======================================================================
+File Transfer Test Report
+Generated: 2026-06-17 01:51:13
+======================================================================
+
+CONFIGURATION
+----------------------------------------
+  Iterations: 1
+  Baud Rate: 9600
+  Connection: REAL_SERIAL
+  Error Tests: No
+  Compression Modes: None, RLE
+
+======================================================================
+SUMMARY
+======================================================================
+  Total Tests: 10
+  Passed: 10
+  Failed: 0
+  Pass Rate: 100.0%
+  Average Speed: 465 B/s
+  Total Data: 164,840 bytes
+  Total Retries: 0
+  Test Duration: 294.9s
+
+  Compression None: 5/5 passed
+  Compression RLE: 5/5 passed
+
+======================================================================
+DETAILED RESULTS
+======================================================================
+[PASS] PC->Victor:test_small.bin:comp=0 iter=1 bytes=500 speed=83B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=0 iter=1 bytes=5120 speed=400B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=0 iter=1 bytes=20480 speed=582B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=0 iter=1 bytes=51200 speed=641B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=0 iter=1 bytes=5120 speed=401B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=1 iter=1 bytes=500 speed=83B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=1 iter=1 bytes=5120 speed=399B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=1 iter=1 bytes=20480 speed=581B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=1 iter=1 bytes=51200 speed=640B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=1 iter=1 bytes=5120 speed=842B/s retries=0
+
+======================================================================
+FINAL STATUS: ALL TESTS PASSED
+======================================================================

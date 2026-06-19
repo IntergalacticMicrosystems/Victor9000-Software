@@ -17,6 +17,7 @@
 #include "fileops.h"
 #include "editor.h"
 #include "config.h"
+#include "serialfs.h"
 
 /*---------------------------------------------------------------------------
  * Forward declarations
@@ -24,6 +25,7 @@
 static void handle_key(KeyEvent *key);
 static void handle_navigation(uint8_t code);
 static void handle_enter(void);
+static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit);
 
 /*---------------------------------------------------------------------------
  * Global state
@@ -97,6 +99,58 @@ static void handle_navigation(uint8_t code)
 }
 
 /*---------------------------------------------------------------------------
+ * serial_view_edit - View/edit a file on a serial panel
+ *
+ * Downloads the remote file to a local temp, opens it in the viewer/editor,
+ * and (when editing) uploads the result back under its original name.
+ *---------------------------------------------------------------------------*/
+static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
+{
+    char remote[MAX_FULL_PATH];
+    char name[14];
+    char temp[16];
+    uint8_t cur;
+
+    /* Copy the 8.3 name out of far storage, form the remote relative path. */
+    str_copy_n(name, f->name, 13);
+    name[13] = '\0';
+    serialfs_build_rel(p, name, remote);
+
+    /* Temp file on the current local drive's root. */
+    cur = dos_get_drive();
+    temp[0] = (char)('A' + cur);
+    temp[1] = ':';
+    temp[2] = '\\';
+    str_copy(&temp[3], "IGCVIEW.TMP");
+
+    ui_status("Fetching from server...");
+    if (serialfs_get_file(remote, temp) != 0) {
+        ui_clear_status();
+        ui_error("Cannot fetch remote file");
+        kbd_wait();
+        return;
+    }
+    ui_clear_status();
+
+    if (edit) {
+        editor_edit(temp);
+        ui_status("Saving to server...");
+        if (serialfs_put_file(temp, remote) != 0) {
+            ui_clear_status();
+            ui_error("Cannot save to server");
+            kbd_wait();
+        } else {
+            ui_clear_status();
+        }
+        panel_read_dir(p);
+    } else {
+        editor_view(temp);
+    }
+
+    dos_delete(temp);
+}
+
+/*---------------------------------------------------------------------------
  * handle_fkey - Handle function keys
  *---------------------------------------------------------------------------*/
 static void handle_fkey(uint8_t fkey_num)
@@ -108,7 +162,23 @@ static void handle_fkey(uint8_t fkey_num)
         case 1:     /* F1: Drive */
             p = panel_get_active();
             drive = dlg_drive_select(p->drive);
-            if (drive >= 0) {
+            if (drive == DLG_DRIVE_SERIAL) {
+                ui_status("Connecting to serial server...");
+                if (serialfs_connect(SERIALFS_PORT_A, SERIALFS_BAUD_DEFAULT)) {
+                    ui_clear_status();
+                    p->backend = PANEL_SERIAL;
+                    p->drive = 0;
+                    p->path[0] = '\0';
+                    p->cursor = 0;
+                    p->top = 0;
+                    panel_read_dir(p);      /* routes to the serial backend */
+                    g_need_redraw = TRUE;
+                } else {
+                    ui_clear_status();
+                    ui_error("No serial server on COM1");
+                    kbd_wait();
+                }
+            } else if (drive >= 0) {
                 panel_set_drive(p, (uint8_t)drive);
                 g_need_redraw = TRUE;
             }
@@ -126,9 +196,13 @@ static void handle_fkey(uint8_t fkey_num)
                 Panel *vp = panel_get_active();
                 FileEntry __far *vf = panel_get_cursor_file(vp);
                 if (vf != (FileEntry __far *)0 && !file_is_dir(vf)) {
-                    char vpath[MAX_FULL_PATH];
-                    path_build(vpath, vp->drive, vp->path, vf->name);
-                    editor_view(vpath);
+                    if (vp->backend == PANEL_SERIAL) {
+                        serial_view_edit(vp, vf, FALSE);
+                    } else {
+                        char vpath[MAX_FULL_PATH];
+                        path_build(vpath, vp->drive, vp->path, vf->name);
+                        editor_view(vpath);
+                    }
                     g_need_redraw = TRUE;
                     ui_draw_frame();
                     ui_draw_headers();
@@ -142,9 +216,13 @@ static void handle_fkey(uint8_t fkey_num)
                 Panel *ep = panel_get_active();
                 FileEntry __far *ef = panel_get_cursor_file(ep);
                 if (ef != (FileEntry __far *)0 && !file_is_dir(ef)) {
-                    char epath[MAX_FULL_PATH];
-                    path_build(epath, ep->drive, ep->path, ef->name);
-                    editor_edit(epath);
+                    if (ep->backend == PANEL_SERIAL) {
+                        serial_view_edit(ep, ef, TRUE);
+                    } else {
+                        char epath[MAX_FULL_PATH];
+                        path_build(epath, ep->drive, ep->path, ef->name);
+                        editor_edit(epath);
+                    }
                     g_need_redraw = TRUE;
                     ui_draw_frame();
                     ui_draw_headers();

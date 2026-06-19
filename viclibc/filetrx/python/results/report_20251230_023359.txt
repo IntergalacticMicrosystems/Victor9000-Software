@@ -1,0 +1,55 @@
+======================================================================
+File Transfer Test Report
+Generated: 2025-12-30 02:33:59
+======================================================================
+
+CONFIGURATION
+----------------------------------------
+  Iterations: 2
+  Baud Rate: 9600
+  Connection: MAME_PTY
+  Error Tests: No
+  Compression Modes: None, RLE
+
+======================================================================
+SUMMARY
+======================================================================
+  Total Tests: 20
+  Passed: 20
+  Failed: 0
+  Pass Rate: 100.0%
+  Average Speed: 685 B/s
+  Total Data: 329,680 bytes
+  Total Retries: 0
+  Test Duration: 568.0s
+
+  Compression None: 10/10 passed
+  Compression RLE: 10/10 passed
+
+======================================================================
+DETAILED RESULTS
+======================================================================
+[PASS] PC->Victor:test_small.bin:comp=0 iter=1 bytes=500 speed=266B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=0 iter=2 bytes=500 speed=281B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=0 iter=1 bytes=5120 speed=728B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=0 iter=2 bytes=5120 speed=717B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=0 iter=1 bytes=20480 speed=808B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=0 iter=2 bytes=20480 speed=808B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=0 iter=1 bytes=51200 speed=855B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=0 iter=2 bytes=51200 speed=844B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=0 iter=1 bytes=5120 speed=719B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=0 iter=2 bytes=5120 speed=720B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=1 iter=1 bytes=500 speed=249B/s retries=0
+[PASS] PC->Victor:test_small.bin:comp=1 iter=2 bytes=500 speed=136B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=1 iter=1 bytes=5120 speed=195B/s retries=0
+[PASS] PC->Victor:test_medium.bin:comp=1 iter=2 bytes=5120 speed=196B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=1 iter=1 bytes=20480 speed=458B/s retries=0
+[PASS] PC->Victor:test_large.bin:comp=1 iter=2 bytes=20480 speed=461B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=1 iter=1 bytes=51200 speed=655B/s retries=0
+[PASS] PC->Victor:test_xlarge.bin:comp=1 iter=2 bytes=51200 speed=636B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=1 iter=1 bytes=5120 speed=1998B/s retries=0
+[PASS] PC->Victor:test_compress.bin:comp=1 iter=2 bytes=5120 speed=1981B/s retries=0
+
+======================================================================
+FINAL STATUS: ALL TESTS PASSED
+======================================================================

@@ -10,6 +10,7 @@
 #include "util.h"
 #include "screen.h"
 #include "keyboard.h"
+#include "serialfs.h"
 
 /*---------------------------------------------------------------------------
  * Static variables
@@ -428,6 +429,140 @@ static uint16_t count_selected_files(Panel *p)
 }
 
 /*---------------------------------------------------------------------------
+ * fops_copy_serial - Copy/move files between a local panel and a serial panel
+ *
+ * Handles one DOS panel and one serial panel (file transfers only; directory
+ * trees and serial-to-serial are refused). Selected files, or the cursor file
+ * if none are selected.
+ *---------------------------------------------------------------------------*/
+static int fops_copy_serial(Panel *src, Panel *dst, int move)
+{
+    FileEntry __far *f;
+    char local[MAX_FULL_PATH];
+    char remote[MAX_FULL_PATH];
+    uint16_t i;
+    uint16_t selected;
+    int result = FOPS_OK;
+
+    if (src->backend == PANEL_SERIAL && dst->backend == PANEL_SERIAL) {
+        ui_error("Both panels are on the serial server");
+        kbd_wait();
+        return FOPS_ERROR;
+    }
+
+    selected = count_selected_files(src);
+    g_file_count = (selected > 0) ? selected : 1;
+    g_file_current = 0;
+
+    for (i = 0; i < src->files.count; i++) {
+        int rc;
+        f = panel_get_file(src, i);
+        if (f == (FileEntry __far *)0) continue;
+        if (selected > 0) {
+            if (!f->selected) continue;
+        } else {
+            if (i != src->cursor) continue;
+        }
+        if (file_is_parent(f) || (f->name[0] == '.' && f->name[1] == '\0')) {
+            if (selected == 0) break;
+            continue;
+        }
+        if (file_is_dir(f)) {
+            ui_error("Directories not supported over serial");
+            kbd_wait();
+            if (selected == 0) break;
+            continue;
+        }
+
+        g_file_current++;
+        ui_show_progress(move ? "Moving" : "Copying", f->name,
+                         g_file_current, g_file_count);
+
+        if (src->backend == PANEL_SERIAL) {
+            /* Serial -> local (download) */
+            serialfs_build_rel(src, f->name, remote);
+            path_build(local, dst->drive, dst->path, f->name);
+            rc = serialfs_get_file(remote, local);
+            if (rc == 0 && move) serialfs_delete(remote);
+        } else {
+            /* Local -> serial (upload) */
+            path_build(local, src->drive, src->path, f->name);
+            serialfs_build_rel(dst, f->name, remote);
+            rc = serialfs_put_file(local, remote);
+            if (rc == 0 && move) fops_delete_file(local);
+        }
+        if (rc != 0) {
+            ui_error("Serial transfer failed");
+            kbd_wait();
+            result = FOPS_ERROR;
+        }
+
+        if (selected == 0) break;
+    }
+
+    ui_hide_progress();
+    panel_read_dir(src);
+    panel_read_dir(dst);
+    return result;
+}
+
+/*---------------------------------------------------------------------------
+ * fops_delete_serial - Delete files on a serial panel
+ *---------------------------------------------------------------------------*/
+static int fops_delete_serial(Panel *panel)
+{
+    FileEntry __far *f;
+    char remote[MAX_FULL_PATH];
+    uint16_t i;
+    uint16_t selected;
+    int result = FOPS_OK;
+
+    selected = count_selected_files(panel);
+
+    if (selected == 0) {
+        f = panel_get_cursor_file(panel);
+        if (f == (FileEntry __far *)0) return FOPS_CANCEL;
+        if (file_is_parent(f) || (f->name[0] == '.' && f->name[1] == '\0')) {
+            return FOPS_CANCEL;
+        }
+        if (dlg_delete_confirm(f->name, file_is_dir(f)) != DLG_YES) {
+            return FOPS_CANCEL;
+        }
+        serialfs_build_rel(panel, f->name, remote);
+        ui_show_progress("Deleting", f->name, 0, 1);
+        if (serialfs_delete(remote) != 0) {
+            ui_error("Cannot delete on server");
+            kbd_wait();
+            result = FOPS_ERROR;
+        }
+    } else {
+        char msg[40];
+        str_copy(msg, "Delete ");
+        num_format(msg + str_len(msg), selected);
+        str_copy(msg + str_len(msg), " files?");
+        if (dlg_confirm("Confirm Delete", msg) != DLG_YES) {
+            return FOPS_CANCEL;
+        }
+        g_file_count = selected;
+        g_file_current = 0;
+        for (i = 0; i < panel->files.count; i++) {
+            f = panel_get_file(panel, i);
+            if (f == (FileEntry __far *)0 || !f->selected) continue;
+            serialfs_build_rel(panel, f->name, remote);
+            g_file_current++;
+            ui_show_progress("Deleting", f->name, g_file_current, g_file_count);
+            if (serialfs_delete(remote) != 0) {
+                result = FOPS_ERROR;
+            }
+        }
+    }
+
+    ui_hide_progress();
+    panel_read_dir(panel);
+    return result;
+}
+
+/*---------------------------------------------------------------------------
  * fops_copy_or_move - Ask Copy/Move once, then perform it
  *
  * Shows a single dialog: the filename when a single item is involved, or
@@ -494,6 +629,11 @@ int fops_copy(void)
     uint16_t i;
     uint16_t selected;
     int result = FOPS_OK;
+
+    /* Either panel on the serial server takes the serial transfer path. */
+    if (src_panel->backend == PANEL_SERIAL || dst_panel->backend == PANEL_SERIAL) {
+        return fops_copy_serial(src_panel, dst_panel, 0);
+    }
 
     if (same_location(src_panel, dst_panel)) {
         ui_error("Source and destination are the same directory");
@@ -576,6 +716,11 @@ int fops_move(void)
     uint16_t i;
     uint16_t selected;
     int result = FOPS_OK;
+
+    /* Either panel on the serial server takes the serial transfer path. */
+    if (src_panel->backend == PANEL_SERIAL || dst_panel->backend == PANEL_SERIAL) {
+        return fops_copy_serial(src_panel, dst_panel, 1);
+    }
 
     if (same_location(src_panel, dst_panel)) {
         ui_error("Source and destination are the same directory");
@@ -700,6 +845,11 @@ int fops_delete(void)
     uint16_t selected;
     int result = FOPS_OK;
 
+    /* A serial panel deletes over the wire. */
+    if (panel->backend == PANEL_SERIAL) {
+        return fops_delete_serial(panel);
+    }
+
     /* Reset state */
     g_file_current = 0;
 
@@ -788,6 +938,19 @@ int fops_mkdir(void)
         return FOPS_CANCEL;
     }
 
+    /* Serial panel: create the directory on the server. */
+    if (panel->backend == PANEL_SERIAL) {
+        char remote[MAX_FULL_PATH];
+        serialfs_build_rel(panel, name, remote);
+        if (serialfs_mkdir(remote) != 0) {
+            ui_error("Cannot create directory");
+            kbd_wait();
+            return FOPS_ERROR;
+        }
+        panel_read_dir(panel);
+        return FOPS_OK;
+    }
+
     /* Build full path */
     path_build(path, panel->drive, panel->path, name);
 
@@ -833,6 +996,19 @@ int fops_rename(void)
 
     if (new_name[0] == '\0' || str_cmp(old_name, new_name) == 0) {
         return FOPS_CANCEL;
+    }
+
+    /* Serial panel: rename on the server (same directory, new 8.3 name). */
+    if (panel->backend == PANEL_SERIAL) {
+        char old_rel[MAX_FULL_PATH];
+        serialfs_build_rel(panel, old_name, old_rel);
+        if (serialfs_rename(old_rel, new_name) != 0) {
+            ui_error("Cannot rename file");
+            kbd_wait();
+            return FOPS_ERROR;
+        }
+        panel_read_dir(panel);
+        return FOPS_OK;
     }
 
     /* Build full paths */
