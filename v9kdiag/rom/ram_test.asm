@@ -9,8 +9,10 @@
 ; Target: 8088/8086 real mode. Output: 4096-byte flat binary loaded at FF000,
 ; reset far-jump at offset 0xFF0 (CPU resets to FFFF0 = our offset 0xFF0).
 ;
-; Status: M1-M3. Display bring-up, ASCII text UI, single-region pattern test
-; engine (patterns + address-in-address), burn-in loop with error latching.
+; Status: M1-M3. Display bring-up, ASCII text UI, burn-in loop with error
+; latching. Per-region tests: pattern fill/verify + address-in-address, then a
+; March C- pass (transition/coupling/decoder faults). A gated DRAM data-
+; retention test (write, hold, verify) catches refresh/leakage faults.
 ; 100% low-RAM coverage (font/stack relocation) is M4.
 ; =============================================================================
 
@@ -31,6 +33,15 @@ org 0x0000
 %else
   %define REGION_WORDS 8000h          ; full 64K segment
 %endif
+
+; March C- (transition/coupling coverage) runs every pass alongside the pattern
+; engine. The DRAM data-retention test runs once every RETENTION_EVERY passes
+; over high RAM. RETENTION_EVERY must be a power of two (used as a pass mask).
+RETENTION_EVERY equ 4
+; Retention hold time ~= RETENTION_OUTER * 65536 inner loops (~0.2s each on a
+; 5 MHz 8088), so the default is roughly a 1-second hold - long enough that a
+; refresh failure (cells decay in ms) or a leaky cell shows up on read-back.
+RETENTION_OUTER equ 6
 
 ; -----------------------------------------------------------------------------
 ; Hardware constants
@@ -77,9 +88,9 @@ g_cbase      equ VARS+18         ; current char base (font location >> 5)
 v_spin       equ VARS+20         ; activity spinner frame index (0-3)
 VARS_WORDS   equ 16              ; size of the VARS block to relocate (words)
 
-; Activity spinner: a glyph at (row 6, col 19) advanced from the test inner loop
+; Activity spinner: a glyph at (row 9, col 19) advanced from the test inner loop
 ; so it spins at a few Hz regardless of RAM size, proving liveness within a pass.
-SPIN_CELL    equ (6*COLS+19)*2   ; VRAM byte offset for the spinner cell
+SPIN_CELL    equ (9*COLS+19)*2   ; VRAM byte offset for the spinner cell
 
 ; High-RAM region tested every pass: segment FIRST_SEG .. (v_memtop-1)
 FIRST_SEG    equ 1000h           ; low 64K is tested separately in phase L
@@ -175,8 +186,8 @@ main_loop:
     cmp bx, [v_memtop]
     jae .pass_done
 
-    mov ax, bx                    ; current segment (row 6, col 13)
-    mov dx, 060Dh
+    mov ax, bx                    ; current segment (row 8, col 13)
+    mov dx, 090Dh
     call print_hex16
 
     call test_seg                 ; in: BX=segment; CF=1 on failure
@@ -193,6 +204,7 @@ main_loop:
     jmp .seg_loop
 
 .pass_done:
+    call maybe_retention          ; gated DRAM data-retention test (high RAM)
 %if FULL_COVERAGE
     ; ---- phase L: test low 64K via font/stack relocation ----
     call test_low64k
@@ -204,16 +216,16 @@ main_loop:
 ; =============================================================================
 reprint_dyn:
     mov ax, [v_pass_hi]
-    mov dx, 0406h                 ; row 4 col 6
+    mov dx, 0706h                 ; row 7 col 6
     call print_hex16
     mov ax, [v_pass_lo]
-    mov dx, 040Ah                 ; row 4 col 10
+    mov dx, 070Ah                 ; row 7 col 10
     call print_hex16
     mov ax, [v_memtop]
-    mov dx, 0210h                 ; row 2 col 16
+    mov dx, 0310h                 ; row 3 col 16
     call print_hex16
     mov ax, [v_err]
-    mov dx, 041Ch                 ; row 4 col 28
+    mov dx, 071Ch                 ; row 7 col 28
     call print_hex16
     ret
 
@@ -303,7 +315,7 @@ test_seg:
     mov es, bx
     xor ax, ax                    ; start word 0
     mov bp, REGION_WORDS          ; full 64K (or FAST_WORDS in fast mode)
-    call test_words
+    call test_region
     jc .fail
     ret                           ; CF=0 from test_words
 .fail:
@@ -337,7 +349,7 @@ test_low64k:
     ; (DS=0 still, so g_attr/g_cbase are valid; print_hex16 saves/restores ES).
     ; AX/CX/DX/SI/DI are all reloaded below, so clobbering them here is fine.
     xor ax, ax
-    mov dx, 060Dh                  ; row 6 col 13 (same field phase H uses)
+    mov dx, 090Dh                  ; row 9 col 13 (same field phase H uses)
     call print_hex16
 
     ; NOTE: this path does NOT return via RET. The caller's return address lives
@@ -363,7 +375,7 @@ test_low64k:
     mov es, ax                    ; ES = 0 (low RAM under test)
     mov ax, 8                     ; skip first 16 bytes (keep NMI vector at 0:8)
     mov bp, (FONT_A/2)-8          ; words [8, FONT_A)
-    call test_words
+    call test_region
     jc .lfail
     mov ax, (FONT_A+FONT_BYTES)/2 ; words after the FONT_A window
 %if FAST
@@ -372,7 +384,7 @@ test_low64k:
     mov bp, 8000h
     sub bp, ax
 %endif
-    call test_words
+    call test_region
     jc .lfail
 
     ; ---- move font A->B (redraw), then test the FONT_A window ----
@@ -386,7 +398,7 @@ test_low64k:
 %else
     mov bp, FONT_BYTES/2
 %endif
-    call test_words
+    call test_region
     pushf
     call font_B_to_A              ; always restore the font to home A
     popf
@@ -485,21 +497,21 @@ show_error:
     mov word [g_attr], ATTR_REV
 
     mov ax, [v_failseg]
-    mov dx, 0A04h                 ; row 10 col 4  (under SEG:)
+    mov dx, 0D04h                 ; row 13 col 4  (under SEG:)
     call print_hex16
     mov ax, [v_failoff]
-    mov dx, 0A10h                 ; row 10 col 16 (under OFF:)
+    mov dx, 0D10h                 ; row 13 col 16 (under OFF:)
     call print_hex16
 
     mov ax, [v_failexp]
-    mov dx, 0B04h                 ; row 11 col 4  (under EXP:)
+    mov dx, 0E04h                 ; row 14 col 4  (under EXP:)
     call print_hex16
     mov ax, [v_failgot]
-    mov dx, 0B10h                 ; row 11 col 16 (under GOT:)
+    mov dx, 0E10h                 ; row 14 col 16 (under GOT:)
     call print_hex16
     mov ax, [v_failexp]           ; failing bits = exp XOR got
     xor ax, [v_failgot]
-    mov dx, 0B1Ch                 ; row 11 col 28 (under BIT:)
+    mov dx, 0E1Ch                 ; row 14 col 28 (under BIT:)
     call print_hex16
 
     mov word [g_attr], ATTR_NORMAL
@@ -526,12 +538,12 @@ size_ram:
 .done:
     mov [v_memtop], bx
     mov ax, bx                    ; show top segment (row 2, col 16)
-    mov dx, 0210h
+    mov dx, 0310h
     call print_hex16
     mov ax, bx                    ; RAM detected in KB = (memtop paras) / 64
     mov cl, 6
     shr ax, cl
-    mov dx, 030Eh                 ; row 3, col 14 (after "RAM DETECTED: ")
+    mov dx, 050Eh                 ; row 5, col 14 (after "RAM DETECTED: ")
     call print_dec
     mov al, 'K'
     call print_char
@@ -545,42 +557,49 @@ draw_ui:
     mov si, s_title
     mov dx, 0000h
     call print_str
+    mov si, s_date                ; build date, just after title (col 23)
+    mov dx, 0017h
+    call print_str
     mov word [g_attr], ATTR_NORMAL
 
-    mov si, s_memtop
-    mov dx, 0200h
-    call print_str
-    mov si, s_ramdet
-    mov dx, 0300h
-    call print_str
-    mov si, s_pass
-    mov dx, 0400h
-    call print_str
-    mov si, s_errors
-    mov dx, 0414h
-    call print_str
-    mov si, s_testing
-    mov dx, 0600h
+    mov si, s_brand               ; branding line, row 1 (below the title)
+    mov dx, 0100h
     call print_str
 
-    ; FAIL block: header row 9, then two aligned rows; label columns at 0/12/24
-    mov si, s_fail
+    mov si, s_memtop
+    mov dx, 0300h
+    call print_str
+    mov si, s_ramdet
+    mov dx, 0500h
+    call print_str
+    mov si, s_pass
+    mov dx, 0700h
+    call print_str
+    mov si, s_errors
+    mov dx, 0714h
+    call print_str
+    mov si, s_testing
     mov dx, 0900h
     call print_str
+
+    ; FAIL block: header row 12, then two aligned rows; label columns at 0/12/24
+    mov si, s_fail
+    mov dx, 0C00h
+    call print_str
     mov si, s_fseg
-    mov dx, 0A00h
+    mov dx, 0D00h
     call print_str
     mov si, s_foff
-    mov dx, 0A0Ch
+    mov dx, 0D0Ch
     call print_str
     mov si, s_exp
-    mov dx, 0B00h
+    mov dx, 0E00h
     call print_str
     mov si, s_got
-    mov dx, 0B0Ch
+    mov dx, 0E0Ch
     call print_str
     mov si, s_bit
-    mov dx, 0B18h
+    mov dx, 0E18h
     call print_str
     ret
 
@@ -806,7 +825,7 @@ patterns:
     dw 00000h, 0FFFFh, 05555h, 0AAAAh, 055AAh, 0AA55h
 NUM_PATTERNS equ ($-patterns)/2
 
-s_title   db "VICTOR 9000 RAM TEST", 0
+s_title   db "VICTOR 9000 RAM TEST V2", 0
 s_memtop  db "MEMORY TOP SEG: ", 0
 s_ramdet  db "RAM DETECTED: ", 0
 s_pass    db "PASS:", 0
@@ -816,12 +835,8 @@ s_testing db "TESTING SEG:", 0
 ; Spinner frame -> font glyph index (| / - \). Indices are ASCII-0x20:
 ; '^'(0x5E)->0x3E used as '|', '/'(0x2F)->0x0F, '-'(0x2D)->0x0D, '\'(0x5C)->0x3C
 SPIN_FRAMES db 03Eh, 00Fh, 00Dh, 03Ch
-s_fail    db "FAIL", 0
-s_fseg    db "SEG:", 0
-s_foff    db "OFF:", 0
-s_exp     db "EXP:", 0
-s_got     db "GOT:", 0
-s_bit     db "BIT:", 0
+; s_fail..s_bit live in the ROM tail (below) to keep this string table clear of
+; the 0xD51 MAME-patch guard.
 
 ; =============================================================================
 ; Reset vector and ROM tail
@@ -830,6 +845,243 @@ s_bit     db "BIT:", 0
 ; negative TIMES if code/data ever grows past it). Those four bytes are then
 ; harmless tail padding that MAME may overwrite with NOPs.
 times (0D51h - ($-$$)) db 0
+
+; 0xD51-0xD54: the four bytes MAME may overwrite with NOPs. Keep real data past
+; them. The build date lives here (in tail space) so the string table stays
+; clear of the 0xD51 patch region.
+times (0D55h - ($-$$)) db 0
+s_date    db ' ', __DATE__, 0           ; " YYYY-MM-DD", follows the title
+s_retn    db "RETENTION:", 0
+s_brand   db "INTERGALACTICMICRO.COM", 0
+s_fail    db "FAIL", 0
+s_fseg    db "SEG:", 0
+s_foff    db "OFF:", 0
+s_exp     db "EXP:", 0
+s_got     db "GOT:", 0
+s_bit     db "BIT:", 0
+
+; =============================================================================
+; test_region - pattern/addr engine (test_words) THEN March C- over the same
+; window. Same in/out contract as test_words: ES=segment, AX=start word index,
+; BP=word count; CF=1 on failure with DI=byte offset, DX=expected, AX=got;
+; BX/BP preserved. Used by both phase H (test_seg) and phase L (test_low64k).
+; =============================================================================
+test_region:
+    push ax                        ; save start-word index (test_words clobbers AX)
+    call test_words
+    jc .fail
+    pop ax                         ; restore start word for march_test
+    call march_test                ; returns CF (and DI/DX/AX on its own failure)
+    ret
+.fail:
+    pop cx                         ; discard saved start word; keep AX=got and CF=1
+    ret                            ; (pop does not affect flags)
+
+; =============================================================================
+; march_test - March C- over ES:[start..start+num) words (backgrounds 0/FFFF):
+;   { up(w0); up(r0,w1); up(r1,w0); dn(r0,w1); dn(r1,w0); dn(r0) }
+; Reads-then-writes each cell in address order, so it catches transition faults,
+; address-decoder faults and coupling faults that the fill-then-verify pattern
+; pass cannot. In/out contract matches test_words; touches no RAM variables.
+; =============================================================================
+%macro M_RW 3                     ; %1=dir(0 up / 1 dn)  %2=read-expect  %3=write
+    mov dx, %2
+%if %1 == 0
+    mov di, bx                    ; up: DI = start byte offset
+    mov cx, bp
+%%lp:
+    mov ax, [es:di]
+    cmp ax, dx
+    jne march_fail
+    mov word [es:di], %3
+    add di, 2
+    loop %%lp
+%else
+    mov di, bx                    ; dn: DI = last word in the window
+    add di, bp
+    add di, bp
+    sub di, 2
+    mov cx, bp
+%%lp:
+    mov ax, [es:di]
+    cmp ax, dx
+    jne march_fail
+    mov word [es:di], %3
+    sub di, 2
+    loop %%lp
+%endif
+    call spin
+%endmacro
+
+march_test:
+    push bx
+    push bp                        ; BP = word count, the loop count for all elems
+    add ax, ax                     ; AX = start word * 2 = start byte offset
+    mov bx, ax                     ; BX = start byte offset (constant)
+    ; M1: up (w0)
+    mov di, bx
+    mov cx, bp
+    xor ax, ax
+    rep stosw
+    call spin
+    M_RW 0, 0,      0FFFFh         ; M2: up (r0,w1)
+    M_RW 0, 0FFFFh, 0              ; M3: up (r1,w0)
+    M_RW 1, 0,      0FFFFh         ; M4: dn (r0,w1)
+    M_RW 1, 0FFFFh, 0              ; M5: dn (r1,w0)
+    ; M6: dn (r0)
+    mov dx, 0
+    mov di, bx
+    add di, bp
+    add di, bp
+    sub di, 2
+    mov cx, bp
+.m6:
+    mov ax, [es:di]
+    cmp ax, dx
+    jne march_fail
+    sub di, 2
+    loop .m6
+    call spin
+    pop bp
+    pop bx
+    clc
+    ret
+march_fail:                        ; DX=expected, AX=got, DI=byte offset already set
+    pop bp
+    pop bx
+    stc
+    ret
+
+; =============================================================================
+; maybe_retention - DRAM data-retention test, run every RETENTION_EVERY'th pass.
+; Phase-H context (DS=SS=0). High RAM only (segment 0 holds font/stack/vars).
+; =============================================================================
+maybe_retention:    
+    mov ax, [v_pass_lo]
+    and ax, (RETENTION_EVERY-1)
+    jnz .skip                      ; only when pass % RETENTION_EVERY == 0
+    call retention_phase
+.skip:
+    ret
+
+; retention_phase - fill all high RAM with a pattern, hold (no DRAM access so
+; hardware refresh has to keep it alive), then verify. Catches refresh failures
+; and leaky/marginal cells that decay between refresh cycles.
+retention_phase:
+    cmp word [v_memtop], FIRST_SEG
+    ja .have
+    ret                            ; no high RAM to hold a pattern
+.have:
+    ; status (row 9): "RETENTION:" + the held pattern
+    mov word [g_attr], ATTR_NORMAL
+    mov si, s_retn
+    mov dx, 0A00h
+    call print_str
+    call retn_pattern              ; DX = pattern
+    mov ax, dx
+    mov dx, 0A0Bh                  ; row 10, col 11 (after "RETENTION: ")
+    call print_hex16
+    ; --- write: fill all high RAM with the pattern ---
+    call retn_pattern              ; DX = pattern (print clobbered DX)
+    mov bx, FIRST_SEG
+.wseg:
+    cmp bx, [v_memtop]
+    jae .wdone
+    mov es, bx
+    xor di, di
+    mov ax, dx
+    mov cx, REGION_WORDS
+    rep stosw
+    add bx, 1000h
+    jmp .wseg
+.wdone:
+    ; --- hold: do not touch DRAM; refresh alone must preserve it ---
+    call ret_delay
+    ; --- verify: read it all back ---
+    mov bx, FIRST_SEG
+.vseg:
+    cmp bx, [v_memtop]
+    jae .vdone
+    call retn_pattern              ; DX = pattern (recompute; show_error clobbers it)
+    mov es, bx
+    call ret_verify_seg            ; ES,DX -> CF, DI=byte offset, AX=got
+    jc .vfail
+.vnext:
+    add bx, 1000h
+    jmp .vseg
+.vfail:
+    mov [v_failseg], bx
+    mov [v_failoff], di
+    mov [v_failexp], dx
+    mov [v_failgot], ax
+    add word [v_err], 1
+    call show_error
+    call reprint_dyn
+    jmp .vnext
+.vdone:
+    call blank_retn                ; clear the row-9 status line
+    ret
+
+; retn_pattern - DX = retention background, alternating AAAA/5555 across runs.
+retn_pattern:
+    mov dx, 0AAAAh
+    test byte [v_pass_lo], RETENTION_EVERY
+    jz .done
+    mov dx, 05555h
+.done:
+    ret
+
+; ret_delay - busy-wait the hold time, keeping the spinner alive. Touches no
+; DRAM (only CX and VRAM via spin) so the pattern just sits and ages.
+ret_delay:
+    push bx
+    mov bx, RETENTION_OUTER
+.o:
+    call spin
+    xor cx, cx                     ; CX=0 -> 65536 inner iterations
+.i:
+    loop .i
+    dec bx
+    jnz .o
+    pop bx
+    ret
+
+; ret_verify_seg - check ES:[0..REGION_WORDS) all equal DX.
+; Out: CF=1 with DI=byte offset, AX=got on mismatch. Preserves BX, DX, BP.
+ret_verify_seg:
+    push cx
+    xor di, di
+    mov ax, dx
+    mov cx, REGION_WORDS
+    repe scasw
+    jne .bad
+    pop cx
+    clc
+    ret
+.bad:
+    sub di, 2                      ; DI -> failing word
+    mov ax, [es:di]                ; got
+    pop cx
+    stc
+    ret
+
+; blank_retn - erase the row-9 retention status line.
+blank_retn:
+    push es
+    push ax
+    push cx
+    push di
+    mov ax, SCREEN_SEG
+    mov es, ax
+    mov di, (10*COLS)*2
+    mov ax, [g_cbase]              ; blank cell (glyph 0 + base)
+    mov cx, 20
+    rep stosw
+    pop di
+    pop cx
+    pop ax
+    pop es
+    ret
 
 times (0FF0h - ($-$$)) db 0
     jmp 0FF00h:cold_start         ; offset 0xFF0: reset entry -> cold_start
