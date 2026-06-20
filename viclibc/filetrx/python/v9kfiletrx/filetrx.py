@@ -21,6 +21,16 @@ from .crc32 import crc32_file, crc32
 from .compress import rle_compress, rle_decompress, compress_if_beneficial
 
 
+def _dos_remote_name(name: str) -> str:
+    """Uppercase a Victor file name and clamp only its 8.3 *filename* component
+    to 12 chars (8 + '.' + 3), preserving any drive/directory prefix. A bare
+    [:12] on the whole string corrupts qualified paths, e.g. 'B:\\COMMAND.COM'
+    -> 'B:\\COMMAND.C' (then 'file not found'); the wire field holds 63 chars."""
+    name = name.upper()
+    idx = max(name.rfind('\\'), name.rfind('/'), name.rfind(':'))
+    return name[:idx + 1] + name[idx + 1:][:12]
+
+
 class TransferError(Exception):
     """File transfer error."""
     def __init__(self, message: str, error_code: int = Error.PROTOCOL):
@@ -144,8 +154,8 @@ class FileTransfer:
         if remote_name is None:
             remote_name = local_path.name
 
-        # Ensure 8.3 format (uppercase)
-        remote_name = remote_name.upper()[:12]
+        # Ensure 8.3 format (uppercase); clamp only the filename, not the path.
+        remote_name = _dos_remote_name(remote_name)
 
         # Initialize stats
         file_size = local_path.stat().st_size

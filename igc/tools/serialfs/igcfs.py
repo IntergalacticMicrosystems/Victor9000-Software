@@ -106,6 +106,16 @@ def _clean(part, maxlen):
     return ''.join(out)
 
 
+def _dos_remote_name(name):
+    """Uppercase a Victor file name and clamp only its 8.3 *filename* component
+    to 12 chars (8 + '.' + 3), preserving any drive/directory prefix. A bare
+    [:12] on the whole string corrupts qualified paths, e.g. 'B:\\COMMAND.COM'
+    -> 'B:\\COMMAND.C' (then 'file not found'); the wire field holds 63 chars."""
+    name = name.upper()
+    idx = max(name.rfind('\\'), name.rfind('/'), name.rfind(':'))
+    return name[:idx + 1] + name[idx + 1:][:12]
+
+
 def _short_name(real_name, is_dir):
     """Best-effort 8.3 form of a single filename (no collision handling)."""
     if is_dir:
@@ -330,7 +340,7 @@ class IgcFileServer:
         date, tm = FileTransfer._unix_to_dos_datetime(src.stat().st_mtime)
         start = StartPacket(direction=Direction.PC_TO_VICTOR, file_size=len(data),
                             file_crc=file_crc, file_date=date, file_time=tm,
-                            file_attr=ATTR_ARCHIVE, filename=remote_name.upper()[:12])
+                            file_attr=ATTR_ARCHIVE, filename=_dos_remote_name(remote_name))
         self.pkt.send_packet(start.pack())
         ready = parse_packet(self.ft._recv_packet())
         if not isinstance(ready, ReadyPacket) or ready.status != 0:
