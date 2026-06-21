@@ -66,6 +66,15 @@
 #define FTX_CHUNK_SIZE      1016    /* Max data per chunk (1024 - 8 header) */
 #define FTX_MAX_PAYLOAD     1024    /* Max packet payload (from packet.h) */
 
+/* Disk I/O block: chunks are accumulated/served in blocks of this size so the
+ * Victor does one big DOS read/write per ~8 chunks instead of one per ~1 KB
+ * chunk. Must be a whole multiple of FTX_CHUNK_SIZE and hold one extra chunk of
+ * headroom (the recv path appends, then flushes if the next chunk would not
+ * fit). Larger = fewer DOS calls but a longer per-flush ACK defer; keep the
+ * flush time under the host's per-DATA ACK timeout. */
+#define FTX_DISK_CHUNKS     8
+#define FTX_DISK_BLOCK      (FTX_DISK_CHUNKS * FTX_CHUNK_SIZE)   /* 8128 bytes */
+
 /* Timeout and retry settings */
 #define FTX_TIMEOUT_MS      5000    /* Timeout per operation (ms) */
 #define FTX_MAX_RETRIES     5       /* Maximum chunk retries */

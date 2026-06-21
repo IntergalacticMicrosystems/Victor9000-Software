@@ -168,10 +168,16 @@ def build_dos_map(dirpath):
 # ---------------------------------------------------------------------------
 
 class IgcFileServer:
-    def __init__(self, root, conn, verbose=False):
+    def __init__(self, root, conn, verbose=False, frame_gap=0.0):
         self.root = Path(root).resolve()
         self.conn = conn
         self.verbose = verbose
+        # Optional fixed pause after each DATA frame on download (PC->Victor).
+        # Gives the polled Victor receiver time to send its ACK and re-enter its
+        # poll loop before the next chunk arrives - covering the post-ACK
+        # turnaround that the 3-byte RX FIFO cannot absorb at high baud. Far
+        # cheaper than per-byte pacing (one gap per ~1 KB chunk, not per byte).
+        self.frame_gap = frame_gap
         # One packet layer shared by the serve loop and FileTransfer, so the
         # alternating sequence bits stay consistent across every exchange.
         self.pkt = PacketProtocol(conn, timeout=2.0, retries=5)
@@ -347,8 +353,14 @@ class IgcFileServer:
             raise IOError("receiver not ready")
         for i in range(total):
             chunk = data[i * CHUNK_SIZE:(i + 1) * CHUNK_SIZE]
-            self.pkt.send_packet(DataPacket(chunk_num=i, data=chunk).pack(),
-                                 timeout=self.ft.DATA_ACK_TIMEOUT)
+            try:
+                self.pkt.send_packet(DataPacket(chunk_num=i, data=chunk).pack(),
+                                     timeout=self.ft.DATA_ACK_TIMEOUT)
+            except PacketError as e:
+                log(f"  ! DATA chunk {i}/{total} (offset {i*CHUNK_SIZE}) failed: {e}")
+                raise
+            if self.frame_gap:
+                time.sleep(self.frame_gap)
         self.pkt.send_packet(EndPacket(total_chunks=total, bytes_sent=len(data),
                                        file_crc=file_crc, status=Status.OK).pack())
         return len(data)
@@ -488,6 +500,10 @@ def main(argv=None):
                     help="pre-send settle delay per frame in --cts-gate mode, "
                          "covering the request/response turnaround (default "
                          "0.003 = 3ms)")
+    ap.add_argument('--frame-gap', type=float, default=0.0, metavar='SECONDS',
+                    help="pause after each DATA frame on download so the polled "
+                         "Victor can ACK and re-arm before the next chunk (e.g. "
+                         "0.003 = 3ms); covers post-ACK turnaround without per-byte pacing")
     ap.add_argument('-v', '--verbose', action='store_true')
     args = ap.parse_args(argv)
     if args.byte_delay > 0.0:
@@ -523,7 +539,7 @@ def main(argv=None):
         f"{'' if actual == args.rtscts else f' (requested {args.rtscts}!)'}"
         f"{pace_desc}{gate_desc}")
 
-    server = IgcFileServer(root, conn, verbose=args.verbose)
+    server = IgcFileServer(root, conn, verbose=args.verbose, frame_gap=args.frame_gap)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

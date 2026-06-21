@@ -83,6 +83,14 @@ typedef struct {
     uint8_t chunk_buf[FTX_CHUNK_SIZE];      /* Chunk data buffer */
     uint8_t decomp_buf[FTX_CHUNK_SIZE];     /* Decompression buffer */
     uint8_t pkt_buf[FTX_MAX_PAYLOAD];       /* Packet buffer */
+
+    /* Disk I/O block buffer: the receive path accumulates chunk payloads here
+     * and flushes one big DOS write per block; the send path reads one big DOS
+     * block here and serves chunks from it. disk_buf_len is the valid byte
+     * count; disk_buf_pos is the read cursor (send path only). */
+    uint8_t disk_buf[FTX_DISK_BLOCK];
+    uint16_t disk_buf_len;
+    uint16_t disk_buf_pos;
 } ftx_state_t;
 
 /*===========================================================================
@@ -310,6 +318,13 @@ int ftx_send_packet(ftx_state_t *state, const uint8_t *data, uint16_t len);
 
 /* Receive a protocol packet */
 int ftx_recv_packet(ftx_state_t *state, uint8_t *data, uint16_t maxlen);
+
+/* Receive a protocol packet with the ACK deferred (software flow control).
+ * Pair with ftx_ack_data() once the chunk has been processed/flushed. */
+int ftx_recv_data(ftx_state_t *state, uint8_t *data, uint16_t maxlen);
+
+/* Send the ACK that ftx_recv_data() withheld. */
+void ftx_ack_data(ftx_state_t *state);
 
 /* Update statistics */
 void ftx_update_stats(ftx_state_t *state, uint16_t bytes);

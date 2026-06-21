@@ -107,29 +107,48 @@ static int send_ready(ftx_state_t *state, uint8_t status)
  * - If chunk_num < expected: duplicate from retry, ignore and wait for correct chunk
  * - If chunk_num > expected: missed chunk, request resend
  */
+/* Flush the accumulated receive block to disk in one DOS write. */
+static int flush_recv_buf(ftx_state_t *state)
+{
+    int16_t written;
+
+    if (state->disk_buf_len == 0) {
+        return FTX_OK;
+    }
+    written = ftx_file_write(state->file_handle, state->disk_buf,
+                             state->disk_buf_len);
+    if (written != (int16_t)state->disk_buf_len) {
+        state->last_error = FTX_ERR_FILE;
+        return FTX_ERR_FILE;
+    }
+    state->disk_buf_len = 0;
+    return FTX_OK;
+}
+
 static int recv_data_packet(ftx_state_t *state, uint16_t expected_chunk)
 {
     int16_t len;
     ftx_data_t *data;
     uint16_t write_len;
-    int16_t written;
     uint8_t *write_buf;
     uint32_t decomp_len;
-    ftx_resend_t resend;
-    int resend_count;
     int recv_err_count;
 
-    resend_count = 0;
     recv_err_count = 0;
 
 retry_recv:
-    /* Receive packet */
-    len = ftx_recv_packet(state, state->pkt_buf, FTX_MAX_PAYLOAD);
+    /* Receive the next packet with its ACK DEFERRED: we release the
+     * (stop-and-wait) sender only by ACKing once this chunk is buffered and
+     * any full block has been flushed - so the sender cannot stream the next
+     * packet into our 3-byte FIFO while we are blocked in a disk write. The
+     * packet layer delivers fresh chunks strictly in order and re-ACKs
+     * duplicates itself, so there is no out-of-order/resend handling here. */
+    len = ftx_recv_data(state, state->pkt_buf, FTX_MAX_PAYLOAD);
     if (len < 0) {
         state->stats.errors++;
-        /* Transient error - the sender will retransmit (dropped chunk after
-         * its ACK timeout, or corrupted chunk after our packet-layer NAK).
-         * Keep waiting for the retransmit instead of failing the transfer. */
+        /* Transient error - the sender will retransmit (corrupted chunk after
+         * our packet-layer NAK). Keep waiting instead of failing. No ACK is
+         * pending on this path (ftx_recv_data NAKed and returned). */
         if (++recv_err_count < FTX_RECV_ERR_RETRIES) {
             goto retry_recv;
         }
@@ -138,17 +157,21 @@ retry_recv:
 
     /* Check for ABORT */
     if (state->pkt_buf[0] == FTX_CMD_ABORT) {
+        ftx_ack_data(state);
         state->last_error = FTX_ERR_ABORT;
         return FTX_ERR_ABORT;
     }
 
-    /* Check for END (premature or expected) */
+    /* Check for END (premature or expected): ACK it so the sender's END send
+     * completes, then signal end of transfer (caller flushes the last block). */
     if (state->pkt_buf[0] == FTX_CMD_END) {
-        return 1;  /* Signal end of transfer */
+        ftx_ack_data(state);
+        return 1;
     }
 
     /* Must be DATA packet */
     if (state->pkt_buf[0] != FTX_CMD_DATA) {
+        ftx_ack_data(state);
         state->stats.errors++;
         state->last_error = FTX_ERR_PROTOCOL;
         return FTX_ERR_PROTOCOL;
@@ -156,28 +179,10 @@ retry_recv:
 
     data = (ftx_data_t *)state->pkt_buf;
 
-    /* Check chunk number */
+    /* Fresh chunks arrive strictly in order; a mismatch is a protocol error. */
     if (data->chunk_num != expected_chunk) {
-        if (data->chunk_num < expected_chunk) {
-            /* Duplicate chunk from retry - PC didn't receive our ACK.
-             * The packet layer already ACKed this, just wait for correct chunk. */
-            resend_count++;
-            if (resend_count < 10) {
-                goto retry_recv;
-            }
-        } else {
-            /* Missed chunk(s) - request resend */
-            resend.cmd = FTX_CMD_RESEND;
-            resend.chunk_num = expected_chunk;
-            ftx_send_packet(state, (uint8_t *)&resend, sizeof(resend));
-            state->stats.retries++;
-            resend_count++;
-            if (resend_count < 10) {
-                goto retry_recv;
-            }
-        }
-
-        /* Too many out-of-order packets, give up */
+        ftx_ack_data(state);
+        state->stats.errors++;
         state->last_error = FTX_ERR_PROTOCOL;
         return FTX_ERR_PROTOCOL;
     }
@@ -187,6 +192,7 @@ retry_recv:
         decomp_len = rle_decompress(data->data, data->chunk_size,
                                     state->decomp_buf, FTX_CHUNK_SIZE);
         if (decomp_len == 0) {
+            ftx_ack_data(state);
             state->stats.errors++;
             state->last_error = FTX_ERR_COMPRESS;
             return FTX_ERR_COMPRESS;
@@ -198,13 +204,25 @@ retry_recv:
         write_len = data->chunk_size;
     }
 
-    /* Write to file */
-    written = ftx_file_write(state->file_handle, write_buf, write_len);
-    if (written != (int16_t)write_len) {
-        state->stats.errors++;
-        state->last_error = FTX_ERR_FILE;
-        return FTX_ERR_FILE;
+    /* Accumulate into the disk block; flush one big write when the next chunk
+     * could no longer fit. The ACK below is sent AFTER any flush - that is the
+     * software flow control that keeps the sender parked during the write. */
+    memcpy(state->disk_buf + state->disk_buf_len, write_buf, write_len);
+    state->disk_buf_len += write_len;
+    if ((uint16_t)(state->disk_buf_len + FTX_CHUNK_SIZE) > FTX_DISK_BLOCK) {
+        if (flush_recv_buf(state) != FTX_OK) {
+            /* Disk error: ACK anyway so the sender does not hang retransmitting,
+             * then fail the transfer. */
+            ftx_ack_data(state);
+            state->stats.errors++;
+            return FTX_ERR_FILE;
+        }
     }
+
+    /* NOTE: the ACK is deliberately NOT sent here. It stays pending and is
+     * released at the top of the next receive call - AFTER the caller's
+     * progress draw - so the peer cannot stream the next packet while we are
+     * still drawing or flushing. This is the software flow control. */
 
     /* Update statistics */
     ftx_update_stats(state, write_len);
@@ -322,6 +340,10 @@ int ftx_recv_after_start(ftx_state_t *state, const char *dst_path,
     /* Initialize CRC for verification */
     computed_crc = FTX_CRC32_INIT;
 
+    /* Start with an empty disk block (chunks accumulate here, flushed in
+     * FTX_DISK_BLOCK-sized writes by recv_data_packet / at end_received). */
+    state->disk_buf_len = 0;
+
     /* Receive data chunks */
     for (chunk = 0; chunk < state->total_chunks; chunk++) {
         retry_count = 0;
@@ -390,6 +412,11 @@ int ftx_recv_after_start(ftx_state_t *state, const char *dst_path,
     }
 
 end_received:
+    /* Flush the final partial block before validating/closing. */
+    if (flush_recv_buf(state) != FTX_OK) {
+        goto abort_transfer;
+    }
+
     /* Process END packet */
     result = process_end_packet(state);
 

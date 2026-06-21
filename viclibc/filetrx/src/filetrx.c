@@ -100,6 +100,28 @@ int ftx_recv_packet(ftx_state_t *state, uint8_t *data, uint16_t maxlen)
     return result;
 }
 
+int ftx_recv_data(ftx_state_t *state, uint8_t *data, uint16_t maxlen)
+{
+    int16_t result;
+
+    result = pkt_recv_data(state->pkt, data, maxlen);
+    if (result < 0) {
+        if (result == PKT_ERR_TIMEOUT) {
+            state->last_error = FTX_ERR_TIMEOUT;
+            return FTX_ERR_TIMEOUT;
+        }
+        state->last_error = FTX_ERR_PACKET;
+        return FTX_ERR_PACKET;
+    }
+
+    return result;
+}
+
+void ftx_ack_data(ftx_state_t *state)
+{
+    pkt_ack_data(state->pkt);
+}
+
 /*===========================================================================
  * Control Functions
  *===========================================================================*/

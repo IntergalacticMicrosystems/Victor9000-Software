@@ -104,10 +104,14 @@ class FileTransfer:
     DEFAULT_TIMEOUT = 5.0
     MAX_RETRIES = 5
 
-    # Per-chunk ACK timeout. Shorter than the overall timeout so a dropped
-    # DATA chunk is retransmitted promptly (the receiver waits through it);
-    # START/READY/END keep the longer default to tolerate slow file opens.
-    DATA_ACK_TIMEOUT = 4.0
+    # Per-chunk ACK timeout. Must comfortably exceed the Victor receiver's
+    # worst-case ACK defer: it now batches chunks and ACKs only after flushing a
+    # full FTX_DISK_BLOCK to the floppy (software flow control), so an ACK can
+    # legitimately lag by one big disk write. Too short and we would retransmit
+    # mid-flush - exactly the back-to-back burst that overruns the 3-byte FIFO.
+    # Still well under the multi-retry budget so a genuinely dropped chunk is
+    # retried promptly. START/READY/END keep the longer default for slow opens.
+    DATA_ACK_TIMEOUT = 8.0
 
     def __init__(self, protocol, timeout: float = DEFAULT_TIMEOUT):
         """

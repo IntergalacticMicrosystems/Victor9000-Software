@@ -80,6 +80,8 @@ typedef struct {
     uint16_t timeout;           /* Timeout setting (loop iterations) */
     uint8_t retries;            /* Retry count */
     uint8_t polled;             /* 1 = polled byte I/O (no ISR); 0 = interrupt */
+    uint8_t ack_pending;        /* 1 = pkt_recv_data() held an ACK for pkt_ack_data() */
+    uint8_t ack_seq;            /* Sequence bit of the deferred ACK */
 } pkt_state_t;
 
 /*===========================================================================
@@ -202,6 +204,31 @@ int16_t pkt_send(pkt_state_t *state, const uint8_t *data, uint16_t len);
  * @return Payload length on success, negative error code on failure
  */
 int16_t pkt_receive(pkt_state_t *state, uint8_t *buf, uint16_t maxlen);
+
+/**
+ * Receive a data packet WITHOUT acknowledging fresh data (deferred ACK).
+ *
+ * Identical to pkt_receive() except that when a fresh DATA packet arrives it
+ * is returned to the caller with its ACK *withheld* (state->ack_pending is set
+ * and state->seq_rx is NOT yet advanced). The caller must call pkt_ack_data()
+ * once it is ready to receive the next packet - e.g. after a slow disk write.
+ *
+ * This is the software flow-control mechanism: the peer is stop-and-wait, so
+ * withholding the ACK blocks it from sending the next packet until we are
+ * actually back in the receive loop. It does not depend on RTS/CTS, which
+ * USB-serial adapters honor unreliably. Duplicates and RESETs are still ACKed
+ * immediately inside this call (they are not held).
+ *
+ * @return Payload length on success (ACK pending), negative on error.
+ */
+int16_t pkt_recv_data(pkt_state_t *state, uint8_t *buf, uint16_t maxlen);
+
+/**
+ * Send the ACK that pkt_recv_data() withheld and advance the RX sequence.
+ * No-op if no ACK is pending. Call when ready for the next packet.
+ * @param state Packet state
+ */
+void pkt_ack_data(pkt_state_t *state);
 
 /**
  * Send ACK packet.

@@ -146,18 +146,33 @@ static int send_data_chunk(ftx_state_t *state, uint16_t chunk_num)
     data->flags = 0;
     data->chunk_num = chunk_num;
 
-    /* Read chunk from file */
-    bytes_read = ftx_file_read(state->file_handle, state->chunk_buf,
-                               FTX_CHUNK_SIZE);
-    if (bytes_read < 0) {
-        state->last_error = FTX_ERR_FILE;
-        return FTX_ERR_FILE;
+    /* Serve this chunk from the read-ahead block, refilling with one big DOS
+     * read per FTX_DISK_BLOCK (= a whole number of chunks) when exhausted.
+     * FTX_DISK_BLOCK is a multiple of FTX_CHUNK_SIZE, so every chunk but the
+     * file's last is full - keeping the chunk count == total_chunks. */
+    if (state->disk_buf_pos >= state->disk_buf_len) {
+        int16_t block = ftx_file_read(state->file_handle, state->disk_buf,
+                                      FTX_DISK_BLOCK);
+        if (block < 0) {
+            state->last_error = FTX_ERR_FILE;
+            return FTX_ERR_FILE;
+        }
+        state->disk_buf_len = (uint16_t)block;
+        state->disk_buf_pos = 0;
     }
-    if (bytes_read == 0) {
+
+    bytes_read = (int16_t)(state->disk_buf_len - state->disk_buf_pos);
+    if (bytes_read > FTX_CHUNK_SIZE) {
+        bytes_read = FTX_CHUNK_SIZE;
+    }
+    if (bytes_read <= 0) {
         /* End of file - shouldn't happen if chunk count is correct */
         state->last_error = FTX_ERR_FILE;
         return FTX_ERR_FILE;
     }
+    memcpy(state->chunk_buf, state->disk_buf + state->disk_buf_pos,
+           (uint16_t)bytes_read);
+    state->disk_buf_pos += (uint16_t)bytes_read;
 
     /* Compress if requested. Mark the chunk so the receiver decompresses it -
      * the per-chunk flag, not just the START's mode, gates decompression. */
@@ -261,8 +276,10 @@ int ftx_send_file(ftx_state_t *state, const char *src_path,
     /* Calculate CRC-32 */
     state->file_crc = calc_file_crc(state);
 
-    /* Seek back to beginning */
+    /* Seek back to beginning; start with an empty read-ahead block. */
     ftx_file_seek(state->file_handle, 0, FTX_SEEK_SET);
+    state->disk_buf_len = 0;
+    state->disk_buf_pos = 0;
 
     /* Calculate total chunks */
     state->total_chunks = FTX_CHUNKS_NEEDED(state->file_size);
@@ -311,10 +328,13 @@ int ftx_send_file(ftx_state_t *state, const char *src_path,
                 retry_count++;
                 state->stats.retries++;
 
-                /* Seek back to retry the chunk */
+                /* Seek back to retry the chunk, and drop the read-ahead block
+                 * so the next read refills from the seeked position. */
                 ftx_file_seek(state->file_handle,
                               (int32_t)chunk * FTX_CHUNK_SIZE,
                               FTX_SEEK_SET);
+                state->disk_buf_len = 0;
+                state->disk_buf_pos = 0;
             }
         }
 

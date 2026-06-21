@@ -222,6 +222,8 @@ void pkt_init(pkt_state_t *state, uint8_t port) {
     state->timeout = PKT_TIMEOUT_LONG;
     state->retries = PKT_MAX_RETRIES;
     state->polled = 0;
+    state->ack_pending = 0;
+    state->ack_seq = 0;
 
     /* Always enable interrupt mode */
     ser_int_enable();
@@ -238,6 +240,8 @@ void pkt_init_polled(pkt_state_t *state, uint8_t port) {
     state->timeout = PKT_TIMEOUT_LONG;
     state->retries = PKT_MAX_RETRIES;
     state->polled = 1;
+    state->ack_pending = 0;
+    state->ack_seq = 0;
 
     /* No ISR: byte I/O is polled straight from the SIO. Make sure RTS is
      * asserted so the peer may send to us. */
@@ -650,6 +654,11 @@ int16_t pkt_receive(pkt_state_t *state, uint8_t *buf, uint16_t maxlen) {
     uint8_t seq;
     int16_t result;
 
+    /* Flush any ACK held by a preceding pkt_recv_data() (e.g. the last data
+     * chunk, before this END-wait receive) right before we poll. No-op if none
+     * is pending. */
+    pkt_ack_data(state);
+
     /* Polled mode: assert RTS while we are actively receiving (the peer,
      * honoring our CTS, may send). We deassert it again the instant we have
      * ACKed fresh data and are about to hand control back to the caller, so
@@ -711,6 +720,86 @@ int16_t pkt_receive(pkt_state_t *state, uint8_t *buf, uint16_t maxlen) {
         }
 
         /* Duplicate of already-delivered data - keep waiting */
+    }
+}
+
+/**
+ * Receive a data packet but DEFER the ACK for fresh data (software flow
+ * control). See pkt_receive() for the common structure; the only difference
+ * is the fresh-data branch, which records the pending ACK instead of sending
+ * it and does not advance seq_rx. The caller calls pkt_ack_data() when it is
+ * ready for the next packet, which is what actually releases the stop-and-wait
+ * peer - so a slow disk write between packets cannot overrun the RX FIFO even
+ * if RTS/CTS is not honored.
+ */
+int16_t pkt_recv_data(pkt_state_t *state, uint8_t *buf, uint16_t maxlen) {
+    uint8_t type;
+    uint8_t seq;
+    int16_t result;
+
+    /* Release the previous chunk's held ACK NOW, as the very last thing before
+     * we poll. The caller's between-packet work (disk flush AND progress draw)
+     * has already happened, so the peer's next packet arrives only once we are
+     * back in the poll loop below - never while we are blocked elsewhere. */
+    pkt_ack_data(state);
+
+    if (state->polled) {
+        ser_set_rts(state->port, SER_TRUE);
+    }
+
+    for (;;) {
+        if (!pkt_wait_sync(state)) {
+            state->last_error = (uint8_t)(-PKT_ERR_TIMEOUT);
+            return PKT_ERR_TIMEOUT;
+        }
+
+        result = pkt_recv_raw(state, &type, buf, maxlen);
+
+        if (result < 0) {
+            pkt_send_nak(state);
+            return result;
+        }
+
+        if ((type & PKT_TYPE_MASK) == PKT_TYPE_RESET) {
+            state->seq_rx = 0;
+            state->seq_tx = 0;
+            state->ack_pending = 0;
+            pkt_send_ack(state, 0);
+            continue;
+        }
+
+        if ((type & PKT_TYPE_MASK) != PKT_TYPE_DATA) {
+            state->last_error = (uint8_t)(-PKT_ERR_FRAME);
+            return PKT_ERR_FRAME;
+        }
+
+        seq = (type & PKT_SEQ_BIT) ? 1 : 0;
+
+        if (seq == state->seq_rx) {
+            /* Fresh data - HOLD the ACK. seq_rx advances only when the caller
+             * calls pkt_ack_data(), so the peer stays parked until then. */
+            state->ack_pending = 1;
+            state->ack_seq = seq;
+            if (state->polled) {
+                ser_set_rts(state->port, SER_FALSE);
+            }
+            return result;
+        }
+
+        /* Duplicate of already-delivered data - re-ACK now so the sender stops
+         * retransmitting, then keep waiting for the fresh packet. */
+        pkt_send_ack(state, seq);
+    }
+}
+
+/**
+ * Send the ACK that pkt_recv_data() withheld and advance the RX sequence.
+ */
+void pkt_ack_data(pkt_state_t *state) {
+    if (state->ack_pending) {
+        pkt_send_ack(state, state->ack_seq);
+        state->seq_rx ^= 1;
+        state->ack_pending = 0;
     }
 }
 
