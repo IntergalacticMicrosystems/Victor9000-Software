@@ -52,14 +52,16 @@ CFLAGS = -0 -mc -s -os -d0 -w4 -e25 -zq -bt=dos -fpc -j -i=$(SRCDIR)
 # 1-byte packed (-zp1) so the on-wire structs stay byte-compatible with the
 # Python server. Override VICLIBC if the repo lives elsewhere.
 #-------------------------------------------------------------------------------
-VICLIBC ?= ../viclibc
+VICLIBC ?= ../viclibc2
 VIC_INC = -i=$(VICLIBC)/serial/include -i=$(VICLIBC)/filetrx/include
 VIC_CFLAGS = $(CFLAGS) -zp1 $(VIC_INC)
 
 # serialfs.c (in src/) includes the viclibc headers, so it needs their path.
 CFLAGS += $(VIC_INC)
 
-VIC_SERIAL_SRCS  = serial.c serial_hw.c serial_buffer.c serial_isr.c packet.c
+# viclibc2 is polled-only (no serial_buffer.c / serial_isr.c). ftx_server.c is
+# omitted: igc is a client and never calls ftx_serve*, the only symbols it defines.
+VIC_SERIAL_SRCS  = serial.c serial_hw.c packet.c
 VIC_FILETRX_SRCS = filetrx.c ftx_send.c ftx_recv.c ftx_dosfile.c \
                    ftx_compress.c ftx_crc32.c
 VIC_OBJS = $(addprefix $(OBJDIR)/vic_,$(VIC_SERIAL_SRCS:.c=.obj)) \

@@ -207,6 +207,16 @@ typedef uint8_t bool_t;
 #define COPY_BUF_MEDIUM         2048
 #define COPY_BUF_HIGH           8192
 
+/* Serial file-transfer staging buffer (bytes). App-owned in viclibc2 (see
+ * ftx_set_io_buffer): bigger buffers mean fewer, larger floppy reads/writes.
+ * Must be a multiple of FTX_CHUNK_SIZE (1024). Cap at 32767: a single DOS
+ * read/write of the whole buffer must fit ftx_file_read/write's int16_t return
+ * (filetrx's own send read-ahead treats a 32768 result as an error). */
+#define XFER_BUF_TINY           4096U        /* 4 chunks (minimum / fallback floor) */
+#define XFER_BUF_LOW            8192U        /* 8 chunks */
+#define XFER_BUF_MEDIUM         16384U       /* 16 chunks */
+#define XFER_BUF_HIGH           24576U       /* 24 chunks (<= 32767 int16 limit) */
+
 /* Editor max lines */
 #define EDITOR_LINES_TINY       128
 #define EDITOR_LINES_LOW        512

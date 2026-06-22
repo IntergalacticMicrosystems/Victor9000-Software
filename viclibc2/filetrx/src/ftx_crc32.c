@@ -11,8 +11,12 @@
 /*
  * CRC-32 lookup table (reflected polynomial 0xEDB88320)
  * Generated for IEEE 802.3 CRC-32
+ *
+ * __near forces the table into DGROUP even in a far-data model (compact/large),
+ * so the inline-asm hot loop below can reach it through a DGROUP segment
+ * register with no per-access far fixup. Harmless (a no-op) in small model.
  */
-static const uint32_t crc32_table[256] = {
+static const uint32_t __near crc32_table[256] = {
     0x00000000UL, 0x77073096UL, 0xEE0E612CUL, 0x990951BAUL,
     0x076DC419UL, 0x706AF48FUL, 0xE963A535UL, 0x9E6495A3UL,
     0x0EDB8832UL, 0x79DCB8A4UL, 0xE0D5E91EUL, 0x97D2D988UL,
@@ -105,6 +109,41 @@ uint32_t ftx_crc32_update(uint32_t crc, const uint8_t *data, uint32_t len)
         uint16_t n  = (len > 0x8000UL) ? (uint16_t)0x8000U : (uint16_t)len;
         const uint8_t *p = data;
 
+#if defined(__COMPACT__) || defined(__LARGE__) || defined(__HUGE__)
+        /* Far-data model (e.g. igc's compact model): `data` is a far pointer, so
+         * read it through DS:SI (loaded with lds) and reach the __near table via
+         * ES = DGROUP. Identical arithmetic to the small-model version below. */
+        _asm {
+            push ds
+            push es
+            push si
+            mov  bx, ds             /* BX = DGROUP (crc32_table is __near)         */
+            mov  es, bx             /* ES = DGROUP for the table                   */
+            lds  si, p              /* DS:SI -> data (far)                         */
+            mov  ax, lo             /* DX:AX = crc                                 */
+            mov  dx, hi
+            mov  cx, n
+        crc_next:
+            mov  bl, al             /* bl = crc & 0xFF                            */
+            xor  bh, bh
+            xor  bl, [si]           /* bx = (crc ^ *data) & 0xFF  (table index)   */
+            inc  si
+            add  bx, bx             /* bx *= 4  (32-bit table entries)            */
+            add  bx, bx
+            mov  al, ah             /* crc >>= 8, as byte moves (DX:AX) ...        */
+            mov  ah, dl
+            mov  dl, dh
+            xor  dh, dh             /* ... DX:AX now = crc >> 8                    */
+            xor  ax, word ptr es:crc32_table[bx]    /* ^= table[index] (low word) */
+            xor  dx, word ptr es:crc32_table[bx+2]  /*               (high word)  */
+            loop crc_next
+            mov  lo, ax
+            mov  hi, dx
+            pop  si
+            pop  es
+            pop  ds
+        }
+#else
         _asm {
             push si
             mov  si, p              /* DS:SI -> data (near, DGROUP in small model) */
@@ -129,6 +168,7 @@ uint32_t ftx_crc32_update(uint32_t crc, const uint8_t *data, uint32_t len)
             mov  hi, dx
             pop  si
         }
+#endif
 
         crc  = ((uint32_t)hi << 16) | lo;
         data += n;

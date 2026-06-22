@@ -6,6 +6,7 @@
  * integrity checking and ACK/NAK acknowledgment protocol.
  */
 
+#include <string.h>
 #include "packet.h"
 #include "serial.h"
 
@@ -71,7 +72,9 @@ static int16_t pkt_map_recv_err(pkt_state_t *state, int16_t err) {
  * CRC-16-CCITT lookup table (polynomial 0x1021).
  * Pre-computed for efficiency on 8086.
  */
-static const uint16_t crc16_table[256] = {
+/* __near keeps the table in DGROUP under a far-data model (compact/large) so the
+ * inline-asm CRC loop reaches it without a far fixup; a no-op in small model. */
+static const uint16_t __near crc16_table[256] = {
     0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7,
     0x8108, 0x9129, 0xA14A, 0xB16B, 0xC18C, 0xD1AD, 0xE1CE, 0xF1EF,
     0x1231, 0x0210, 0x3273, 0x2252, 0x52B5, 0x4294, 0x72F7, 0x62D6,
@@ -271,7 +274,9 @@ int16_t pkt_recv_raw(pkt_state_t *state, uint8_t *type,
     int16_t data;
     uint16_t len;
     uint16_t crc_recv, crc_calc;
-    static uint8_t frame[PKT_MAX_PAYLOAD + 3];  /* type + payload + crc */
+    /* __near keeps frame in DGROUP under a far-data model, so the capture loop
+     * (ES=DGROUP) and the CRC loop (DS=DGROUP) reach it with no far fixup. */
+    static uint8_t __near frame[PKT_MAX_PAYLOAD + 3];  /* type + payload + crc */
     uint8_t  port = state->port;
     uint16_t total;
 
@@ -453,29 +458,28 @@ int16_t pkt_recv_raw(pkt_state_t *state, uint8_t *type,
      *    sits and waits for it. The old per-byte C version here (a pkt_crc16_byte
      *    call plus a frame->buf copy for every byte) cost ~100 ms for a 1 KB
      *    chunk on the 8088's 8-bit bus - which became the dominant per-chunk cost
-     *    on receive (measured: it is the bulk of the ~100 ms ACK latency). This
-     *    inline asm does the identical work - copy each payload byte to buf and
-     *    fold it into the CRC-16 - in one tight pass, ~6-8x faster. The capture
-     *    loop above is untouched.
+     *    on receive (measured: it is the bulk of the ~100 ms ACK latency). The
+     *    inline asm below folds the CRC-16 in one tight pass (~6-8x faster); the
+     *    payload copy to the caller buffer is a single memcpy (rep movs) after
+     *    it. Splitting the copy out of the asm keeps the asm all-near so the same
+     *    code serves both small and far-data (compact) models - the caller's buf
+     *    may be far, but frame/crc16_table are __near (DGROUP).
      *
      *    CRC-16/CCITT, MSB-first: crc = (crc<<8) ^ crc16_table[(crc>>8) ^ byte],
      *    init 0xFFFF, over type + payload (frame[0..len]). Registers: AX=crc,
-     *    BX=table index, CX=byte count, DL=current byte, SI=frame ptr (read),
-     *    DI=buf ptr (write). Everything is near (DGROUP=DS in small model), so
-     *    [si]/[di]/crc16_table[bx] need no segment override. */
+     *    BX=table index, CX=byte count, DL=current byte, SI=frame ptr (read).
+     *    frame and crc16_table are __near (DGROUP), so [si]/crc16_table[bx] need
+     *    no segment override in any model. */
     *type = frame[0];
     {
-        const uint8_t *fptr = frame;
-        uint8_t       *bptr = buf;
+        const uint8_t __near *fptr = frame;
         uint16_t       plen = len;
         uint16_t       vcrc = 0;    /* assigned by the asm below; init quiets W200 */
         _asm {
             push si
-            push di
             mov  si, fptr           /* SI -> frame[0] (type byte)        */
-            mov  di, bptr           /* DI -> buf[0]                      */
             mov  ax, 0FFFFh         /* crc = 0xFFFF                      */
-            /* fold the type byte (frame[0]); it is not copied to buf */
+            /* fold the type byte (frame[0]) */
             mov  bl, ah             /* crc >> 8                          */
             xor  bl, [si]           /* ^ type                            */
             inc  si
@@ -484,16 +488,14 @@ int16_t pkt_recv_raw(pkt_state_t *state, uint8_t *type,
             mov  ah, al             /* crc <<= 8 ...                     */
             xor  al, al
             xor  ax, word ptr crc16_table[bx]
-            /* payload: copy frame[1+i] -> buf[i] and fold into crc */
+            /* fold the payload (frame[1..len]) */
             mov  cx, plen
             jcxz vdone
         vloop:
             mov  bl, ah             /* crc >> 8                          */
             mov  dl, [si]           /* payload byte                      */
             xor  bl, dl             /* index = (crc>>8) ^ byte           */
-            mov  byte ptr [di], dl  /* buf[i] = byte                     */
             inc  si
-            inc  di
             xor  bh, bh
             shl  bx, 1
             mov  ah, al             /* crc <<= 8 ...                     */
@@ -502,10 +504,11 @@ int16_t pkt_recv_raw(pkt_state_t *state, uint8_t *type,
             loop vloop
         vdone:
             mov  vcrc, ax
-            pop  di
             pop  si
         }
         crc_calc = vcrc;
+        /* Copy the payload out to the caller buffer (far in compact model). */
+        memcpy(buf, &frame[1], plen);
     }
     crc_recv = (uint16_t)frame[len + 1] | ((uint16_t)frame[len + 2] << 8);
     if (crc_recv != crc_calc) {

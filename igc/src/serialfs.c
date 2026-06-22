@@ -10,6 +10,7 @@
 #include "panel.h"
 #include "util.h"
 #include "ui.h"
+#include "mem.h"
 
 /* The viclibc structs are 1-byte packed on the wire (the library is built
  * -zp1). igc itself uses its default packing, so wrap these includes in
@@ -36,6 +37,15 @@ static bool_t      g_connected = FALSE;
  * 8 KB stack (igc is single-threaded, so a module-static is fine). */
 static uint8_t g_sfs_buf[PKT_MAX_PAYLOAD];
 
+/* Disk staging buffer for file transfers. viclibc2 no longer owns this - the
+ * app allocates it and registers it with ftx_set_io_buffer. Sized by memory
+ * tier (grows when RAM allows; see mem_get_xfer_buf_size), it batches floppy
+ * I/O: write-batching on receive (used inside filetrx) and read-ahead on send
+ * (used by serialfs_put_named below). Allocated in serialfs_connect, freed in
+ * serialfs_disconnect, so it outlives every transfer made on the session. */
+static uint8_t __far *g_io_buf = (uint8_t __far *)0;
+static uint16_t       g_io_bufsize = 0;
+
 /*---------------------------------------------------------------------------
  * Connection management
  *---------------------------------------------------------------------------*/
@@ -46,8 +56,27 @@ bool_t serialfs_connect(uint8_t port, uint8_t baud_idx)
     pkt_init_polled(&g_pkt, port);      /* polled mode - no ISR on this port */
     ftx_init(&g_ftx, &g_pkt);
 
+    /* Allocate the app-owned staging buffer and hand it to filetrx. Same tiered
+     * size + single fallback-to-floor as the editor/copy buffers. Without it,
+     * ftx_receive_file/ftx_send_file fail with FTX_ERR_MEMORY. */
+    g_io_bufsize = mem_get_xfer_buf_size();
+    g_io_buf = (uint8_t __far *)mem_alloc(g_io_bufsize);
+    if (g_io_buf == (uint8_t __far *)0) {
+        g_io_bufsize = XFER_BUF_TINY;
+        g_io_buf = (uint8_t __far *)mem_alloc(g_io_bufsize);
+    }
+    if (g_io_buf == (uint8_t __far *)0) {
+        g_io_bufsize = 0;
+        g_connected = FALSE;
+        return FALSE;
+    }
+    ftx_set_io_buffer(&g_ftx, (uint8_t *)g_io_buf, g_io_bufsize);
+
     /* Resync sequence bits with the server. Fails if nothing answers. */
     if (!pkt_send_reset(&g_pkt)) {
+        mem_free(g_io_buf);
+        g_io_buf = (uint8_t __far *)0;
+        g_io_bufsize = 0;
         g_connected = FALSE;
         return FALSE;
     }
@@ -59,7 +88,10 @@ bool_t serialfs_connect(uint8_t port, uint8_t baud_idx)
 void serialfs_disconnect(void)
 {
     /* Leave the remote server running (it may serve later reconnects); just
-     * forget the local session. */
+     * forget the local session and release the staging buffer. */
+    mem_free(g_io_buf);
+    g_io_buf = (uint8_t __far *)0;
+    g_io_bufsize = 0;
     g_connected = FALSE;
 }
 
@@ -241,10 +273,11 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
 
     fsize = ftx_file_size(fh);
 
-    /* CRC-32 of the whole file (matches the server's verification). */
+    /* CRC-32 of the whole file (matches the server's verification). Read in big
+     * io-buffer blocks rather than 1 KB chunks - fewer, larger floppy reads. */
     fcrc = FTX_CRC32_INIT;
-    while ((nread = ftx_file_read(fh, g_ftx.chunk_buf, FTX_CHUNK_SIZE)) > 0) {
-        fcrc = ftx_crc32_update(fcrc, g_ftx.chunk_buf, (uint32_t)nread);
+    while ((nread = ftx_file_read(fh, (uint8_t *)g_io_buf, g_io_bufsize)) > 0) {
+        fcrc = ftx_crc32_update(fcrc, (uint8_t *)g_io_buf, (uint32_t)nread);
     }
     fcrc ^= FTX_CRC32_INIT;
     ftx_file_get_datetime(fh, &fdate, &ftime);
@@ -282,26 +315,40 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
         return -1;
     }
 
-    /* DATA chunks, built in the ftx packet buffer. The bar tick sits after
-     * pkt_send (which has already collected this chunk's ACK), so it draws in
-     * the lull before we read and send the next chunk - no inbound bytes are
-     * in flight to be missed. */
+    /* DATA chunks. Read the file in big io-buffer blocks (fewer floppy reads),
+     * then carve FTX_CHUNK_SIZE slices into the DATA packet built in pkt_buf.
+     * io_bufsize is a multiple of FTX_CHUNK_SIZE, so only the file's final block
+     * yields a short last slice. The bar tick sits after pkt_send (which has
+     * already collected this chunk's ACK), so it draws in the lull before the
+     * next slice - no inbound bytes are in flight to be missed. */
     dpkt = (ftx_data_t __far *)g_ftx.pkt_buf;
-    for (chunk = 0; chunk < total; chunk++) {
-        nread = ftx_file_read(fh, dpkt->data, FTX_CHUNK_SIZE);
-        if (nread < 0) {
+    chunk = 0;
+    while (chunk < total) {
+        int16_t  blk;
+        uint16_t off;
+
+        blk = ftx_file_read(fh, (uint8_t *)g_io_buf, g_io_bufsize);
+        if (blk <= 0) {
             ftx_file_close(fh);
             return -1;
         }
-        dpkt->cmd = FTX_CMD_DATA;
-        dpkt->flags = 0;
-        dpkt->chunk_num = chunk;
-        dpkt->chunk_size = (uint16_t)nread;
-        if (pkt_send(&g_pkt, g_ftx.pkt_buf, (uint16_t)(6 + nread)) < 0) {
-            ftx_file_close(fh);
-            return -1;
+        for (off = 0; off < (uint16_t)blk; off += FTX_CHUNK_SIZE) {
+            uint16_t slice = (uint16_t)blk - off;
+            if (slice > FTX_CHUNK_SIZE) {
+                slice = FTX_CHUNK_SIZE;
+            }
+            dpkt->cmd = FTX_CMD_DATA;
+            dpkt->flags = 0;
+            dpkt->chunk_num = chunk;
+            dpkt->chunk_size = slice;
+            mem_copy_far(dpkt->data, g_io_buf + off, slice);
+            if (pkt_send(&g_pkt, g_ftx.pkt_buf, (uint16_t)(6 + slice)) < 0) {
+                ftx_file_close(fh);
+                return -1;
+            }
+            chunk++;
+            ui_progress_tick(chunk, total);
         }
-        ui_progress_tick((uint16_t)(chunk + 1), total);
     }
     ftx_file_close(fh);
 

@@ -17,6 +17,7 @@ typedef struct {
     uint16_t files_per_panel;   /* Max files based on tier */
     uint32_t editor_buf_size;   /* Editor buffer size based on tier */
     uint16_t copy_buf_size;     /* Copy buffer size based on tier */
+    uint16_t xfer_buf_size;     /* Serial transfer buffer size based on tier */
 } MemState;
 
 extern MemState g_mem;
@@ -64,5 +65,8 @@ uint32_t mem_get_editor_buf_size(void);
 
 /* Get copy buffer size for current tier */
 uint16_t mem_get_copy_buf_size(void);
+
+/* Get serial transfer staging buffer size for current tier */
+uint16_t mem_get_xfer_buf_size(void);
 
 #endif /* MEM_H */
