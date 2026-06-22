@@ -6,7 +6,7 @@
 
 ## Executables
 - Victor 9000 [igc.exe](bin/igc.exe)
-- Windows Serial server [igcfs.exe](tools/serialfs/dist/igcfs.exe)
+- Windows Serial server [igcfs.exe](tools/serialfs/igcfs.exe)
 
 ## Known issues / Limitations
 
