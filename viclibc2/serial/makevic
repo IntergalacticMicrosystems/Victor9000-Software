@@ -1,0 +1,9 @@
+#!/bin/bash
+# Build Victor 9000 serial library with OpenWatcom v2
+
+# Set up OpenWatcom environment
+source /opt/watcom/owsetenv.sh
+export LIB=$WATCOM/lib286/dos
+
+# Run wmake with any arguments passed to this script
+wmake "$@"

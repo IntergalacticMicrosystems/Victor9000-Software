@@ -1,0 +1,14 @@
+# OpenWatcom build artifacts
+obj/
+*.lib
+*.exe
+*.err
+*.map
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/

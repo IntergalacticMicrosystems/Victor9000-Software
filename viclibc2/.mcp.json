@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mame": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/root/Victor9000-Development-Private/mame/mame-mcp-server/dist/index.js"]
+    }
+  }
+}
