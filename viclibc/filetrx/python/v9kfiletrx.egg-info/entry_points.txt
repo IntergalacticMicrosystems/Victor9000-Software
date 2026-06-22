@@ -1,3 +1,0 @@
-[console_scripts]
-v9k-recv = v9kfiletrx.cli:recv_main
-v9k-send = v9kfiletrx.cli:send_main

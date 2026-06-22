@@ -1,7 +1,0 @@
-Metadata-Version: 2.1
-Name: v9kfiletrx
-Version: 1.0.0
-Summary: File transfer library for Victor 9000
-Author: Victor 9000 Development
-Requires-Python: >=3.9
-Provides-Extra: dev

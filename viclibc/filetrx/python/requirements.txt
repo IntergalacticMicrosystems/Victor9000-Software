@@ -1,8 +1,0 @@
-# Victor 9000 File Transfer Library - Requirements
-
-# Runtime dependencies
-# v9kserial - from ../serial/python (install with: pip install -e ../serial/python)
-
-# Development dependencies
-pytest>=7.0
-pytest-cov>=4.0
