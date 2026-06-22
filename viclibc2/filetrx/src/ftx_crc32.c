@@ -112,12 +112,14 @@ uint32_t ftx_crc32_update(uint32_t crc, const uint8_t *data, uint32_t len)
 #if defined(__COMPACT__) || defined(__LARGE__) || defined(__HUGE__)
         /* Far-data model (e.g. igc's compact model): `data` is a far pointer, so
          * read it through DS:SI (loaded with lds) and reach the __near table via
-         * ES = DGROUP. Identical arithmetic to the small-model version below. */
+         * ES = DGROUP. DGROUP is taken from SS (which equals DGROUP here) because
+         * DS floats in a far-data model. Identical arithmetic to the small-model
+         * version below. */
         _asm {
             push ds
             push es
             push si
-            mov  bx, ds             /* BX = DGROUP (crc32_table is __near)         */
+            mov  bx, ss             /* BX = DGROUP (= SS; crc32_table is __near)   */
             mov  es, bx             /* ES = DGROUP for the table                   */
             lds  si, p              /* DS:SI -> data (far)                         */
             mov  ax, lo             /* DX:AX = crc                                 */

@@ -41,7 +41,7 @@ PKT_TYPE_RESET = 0x04   # Sequence-bit resync (connection hello)
 PKT_SEQ_BIT = 0x80      # Bit 7 of TYPE: alternating sequence bit (DATA/ACK)
 PKT_TYPE_MASK = 0x7F    # Bits 0-6 of TYPE: packet type
 
-PKT_MAX_PAYLOAD = 1024  # Maximum payload size
+PKT_MAX_PAYLOAD = 2000  # Maximum payload size (match viclibc2 packet.h)
 
 # Default timeouts (seconds)
 DEFAULT_TIMEOUT = 1.0

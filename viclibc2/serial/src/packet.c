@@ -383,7 +383,9 @@ int16_t pkt_recv_raw(pkt_state_t *state, uint8_t *type,
             push si
             push di
             push es
-            mov  ax, ds
+            mov  ax, ss                 /* SS = DGROUP here; DS may be far data
+                                         * (compact model) so derive DGROUP from
+                                         * SS, not DS, to address __near frame */
             mov  es, ax                 /* ES = DGROUP (frame + guard log) */
             lea  bx, frame              /* BX = &frame[0] */
             mov  dx, total
@@ -477,6 +479,11 @@ int16_t pkt_recv_raw(pkt_state_t *state, uint8_t *type,
         uint16_t       vcrc = 0;    /* assigned by the asm below; init quiets W200 */
         _asm {
             push si
+            push ds
+            mov  ax, ss             /* DS = DGROUP (= SS here); compact-model DS
+                                     * may be far data, so point it at DGROUP to
+                                     * reach __near frame[si] and crc16_table */
+            mov  ds, ax
             mov  si, fptr           /* SI -> frame[0] (type byte)        */
             mov  ax, 0FFFFh         /* crc = 0xFFFF                      */
             /* fold the type byte (frame[0]) */
@@ -504,6 +511,7 @@ int16_t pkt_recv_raw(pkt_state_t *state, uint8_t *type,
             loop vloop
         vdone:
             mov  vcrc, ax
+            pop  ds
             pop  si
         }
         crc_calc = vcrc;

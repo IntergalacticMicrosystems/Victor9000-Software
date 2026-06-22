@@ -65,10 +65,10 @@ class Error(IntEnum):
     PACKET = -11
 
 
-# Size limits
+# Size limits (match viclibc2 ftx_protocol.h)
 MAX_FILENAME = 64
-CHUNK_SIZE = 1016
-MAX_PAYLOAD = 1024
+CHUNK_SIZE = 1024
+MAX_PAYLOAD = 1040
 
 
 @dataclass
