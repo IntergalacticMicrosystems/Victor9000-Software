@@ -4,6 +4,10 @@
 
 ![IGC Screenshot](igc-screenshot.png)
 
+## Executables
+Victor 9000 [igc.exe](bin/igc.exe)
+Windows Serial server [igcfs.exe](tools/serialfs/dist/igcfs.exe)
+
 ## Known issues / Limitations
 
 - **DOS < 2.11** - Untested
@@ -50,9 +54,9 @@
 
 ## Serial File Transfer
 
-IGC can browse a directory on a modern PC over a direct RS-232 cable and copy
-files in both directions — handy for moving programs and data on/off the Victor
-without floppies.
+IGC can browse a directory on a modern PC over a simple 3-wire null-modem RS-232
+cable and copy files in both directions — handy for moving programs and data on/off
+the Victor without floppies.
 
 ### On the Victor (client)
 

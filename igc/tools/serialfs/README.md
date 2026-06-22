@@ -1,8 +1,9 @@
 # igcfs — igc serial file server
 
 Serves a directory on a modern PC to the **igc** file manager running on a
-Victor 9000, over a direct serial cable. In igc, press **F1** on a pane and pick
-**Serial A (COM1)**; the pane then browses the directory this program serves.
+Victor 9000, over a a simple 3-wire null-modem serial cable.
+In igc, press **F1** on a pane and pick **Serial A (COM1)**;
+the pane then browses the directory this program serves.
 
 This is the PC-side *server* half of the vetted Victor file-transfer protocol
 (viclibc `serial/` + `filetrx/`). The reliable packet layer and FTX protocol are
