@@ -1,0 +1,7 @@
+# PyInstaller build artifacts (see build.sh / build.bat / igcfs.spec)
+/build/
+/dist/
+/.build-venv/
+/.venv/
+__pycache__/
+*.pyc

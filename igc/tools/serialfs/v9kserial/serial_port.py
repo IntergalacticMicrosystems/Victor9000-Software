@@ -30,7 +30,7 @@ class SerialConnection(Connection):
     """
 
     def __init__(self, port: str, baudrate: int = 9600, timeout: float = 1.0,
-                 rtscts: bool = False, pace: bool = False,
+                 pace: bool = False,
                  byte_delay: float = 0.0, cts_gate: bool = False,
                  cts_timeout: float = 0.5, gate_settle: float = 0.003):
         """
@@ -40,8 +40,6 @@ class SerialConnection(Connection):
             port: Serial port path (e.g., '/dev/ttyUSB0', 'COM1')
             baudrate: Baud rate
             timeout: Read timeout in seconds
-            rtscts: Enable RTS/CTS hardware flow control (the driver then owns
-                    the RTS line; we must not drive it by hand).
             pace: Write one byte per write()+flush() instead of the whole frame
                   at once, so the Victor's slow polled receiver and 3-byte FIFO
                   can keep up at higher line rates without relying on the USB
@@ -49,24 +47,24 @@ class SerialConnection(Connection):
             byte_delay: Seconds to sleep after each paced byte (only used when
                   pace is set). 0 = back-to-back single-byte writes.
             cts_gate: Software, packet-granular flow control. Before writing a
-                  frame, wait until CTS is asserted (the Victor raises its RTS
-                  when its polled receiver is ready between packets). This
-                  honors the Victor's RTS in software at packet boundaries -
-                  where ms-scale USB latency is harmless - instead of relying
-                  on the adapter's byte-exact hardware CTS gating (which a
-                  USB-serial chip can't do). Pair with rtscts=False.
+                  frame, sleep gate_settle and (best-effort) wait for CTS. The
+                  Victor is 3-wire and holds its RTS (our CTS) asserted the
+                  whole time, so the CTS check returns immediately and gives no
+                  "ready" edge; the actual throttle is the gate_settle delay,
+                  which brackets the Victor's brief non-polling window at packet
+                  boundaries where ms-scale USB latency is harmless.
             cts_timeout: Max seconds to wait for CTS before sending anyway
                   (best-effort fallback so a stuck line can't deadlock; the
-                  packet layer's own retry/timeout then covers it).
-            gate_settle: Seconds to sleep before each gated frame. Covers the
-                  request->response turnaround, where the Victor keeps RTS
-                  asserted continuously (so CTS gives no "ready" edge) yet has
-                  a brief non-polling window between sending its request and
-                  re-entering its receive loop. A few ms lets it get there.
+                  packet layer's own retry/timeout then covers it). With this
+                  3-wire Victor, CTS is always asserted, so this rarely elapses.
+            gate_settle: Seconds to sleep before each gated frame. This is the
+                  real gating knob: it covers the request->response turnaround,
+                  where the Victor has a brief non-polling window between sending
+                  its request and re-entering its receive loop. A few ms lets it
+                  get there.
         """
         super().__init__(baudrate, timeout)
         self.port = port
-        self.rtscts = rtscts
         self.pace = pace
         self.byte_delay = byte_delay
         self.cts_gate = cts_gate
@@ -85,17 +83,15 @@ class SerialConnection(Connection):
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.01,  # Short timeout for non-blocking
                 xonxoff=False,
-                rtscts=self.rtscts,   # set at open time so the driver honors it
+                rtscts=False,   # 3-wire link; hardware flow control is inert here
                 dsrdtr=False
             )
-            # Assert DTR explicitly: peers (or UARTs in auto-enable modes) may
-            # gate their receiver/transmitter on it. Only force RTS by hand when
-            # hardware flow control is OFF - with rtscts on, the OS/driver drives
-            # RTS from its input buffer state, and our poking it would fight that.
+            # Assert DTR and RTS explicitly: peers (or UARTs in auto-enable modes)
+            # may gate their receiver/transmitter on these lines. We hold both
+            # asserted statically since the link carries no hardware flow control.
             try:
                 self._serial.dtr = True
-                if not self.rtscts:
-                    self._serial.rts = True
+                self._serial.rts = True
             except (OSError, serial.SerialException):
                 pass    # PTYs have no modem lines
             self._connected = True
@@ -115,11 +111,11 @@ class SerialConnection(Connection):
     def _wait_cts(self) -> None:
         """Block until CTS is asserted (peer ready), up to cts_timeout.
 
-        The Victor's polled receiver raises its RTS (our CTS) exactly when it
-        is sitting in its read loop ready for the next packet, and drops it
-        while it processes one. Gating each frame on CTS therefore matches the
-        peer's between-packet readiness at packet granularity. Best-effort:
-        on timeout we send anyway and let the packet layer's retry recover.
+        Note: the Victor is 3-wire and holds its RTS (our CTS) asserted the
+        whole time, so in practice CTS is already high and this returns at once
+        - the real between-packet throttle is the gate_settle sleep in _raw_send.
+        Kept best-effort for any peer that does drop CTS: on timeout we send
+        anyway and let the packet layer's retry recover.
         """
         deadline = time.time() + self.cts_timeout
         while time.time() < deadline:

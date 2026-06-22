@@ -483,8 +483,6 @@ def main(argv=None):
     ap.add_argument('--dev', default='/dev/ttyUSB0', help="serial device")
     ap.add_argument('--baud', type=int, default=BAUD_RATES[BAUD_38400],
                     help="baud rate (default 38400)")
-    ap.add_argument('--no-rtscts', dest='rtscts', action='store_false',
-                    help="disable RTS/CTS hardware flow control (default on)")
     ap.add_argument('--pace-bytes', dest='pace', action='store_true',
                     help="transmit one byte per write()+flush() so a slow polled "
                          "receiver keeps up at higher baud")
@@ -494,8 +492,7 @@ def main(argv=None):
     ap.add_argument('--cts-gate', dest='cts_gate', action='store_true',
                     help="packet-granular software flow control: hold each "
                          "frame until the Victor asserts CTS (its RTS). Best "
-                         "for higher baud over a USB-serial cable; forces "
-                         "--no-rtscts")
+                         "for higher baud over a USB-serial cable")
     ap.add_argument('--gate-settle', type=float, default=0.003, metavar='SECONDS',
                     help="pre-send settle delay per frame in --cts-gate mode, "
                          "covering the request/response turnaround (default "
@@ -508,17 +505,16 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.byte_delay > 0.0:
         args.pace = True
-    if args.cts_gate:
-        args.rtscts = False  # software gating owns CTS; don't let HW also gate
 
     root = Path(args.root)
     if not root.is_dir():
         ap.error(f"--root {args.root} is not a directory")
 
-    # Open with rtscts set from the start: on a direct cable the host must honor
-    # the Victor's polled-mode RTS gating, or the Victor's 3-byte receive FIFO
-    # overflows on the request/response turnaround (esp. at 38400).
-    conn = SerialConnection(args.dev, baudrate=args.baud, rtscts=args.rtscts,
+    # The Victor link is 3-wire and the uPD7201 never deasserts RTS (it's a static
+    # CR5 output), so hardware flow control would be inert; the port runs without
+    # it. Reliable multi-packet transfers at 38400 come from the Victor's lean
+    # polled receive path. --cts-gate offers optional software gating.
+    conn = SerialConnection(args.dev, baudrate=args.baud,
                             pace=args.pace, byte_delay=args.byte_delay,
                             cts_gate=args.cts_gate, gate_settle=args.gate_settle)
     try:
@@ -526,18 +522,12 @@ def main(argv=None):
     except Exception as e:
         log(f"failed to open {args.dev}: {e}")
         return 2
-    # Read the flag back from the live port so the log reflects reality, not the
-    # request - if the driver couldn't honor it we want to see that here.
-    actual = bool(getattr(conn._serial, 'rtscts', False)) if conn._serial else False
     pace_desc = (f" pace=1B/flush"
                  f"{f'+{args.byte_delay*1000:.2f}ms' if args.byte_delay else ''}"
                  if args.pace else "")
     gate_desc = (f" cts-gate+{args.gate_settle*1000:.0f}ms"
                  if args.cts_gate else "")
-    log(f"opened {args.dev} @ {args.baud} 8N1 "
-        f"rtscts={'on' if actual else 'off'}"
-        f"{'' if actual == args.rtscts else f' (requested {args.rtscts}!)'}"
-        f"{pace_desc}{gate_desc}")
+    log(f"opened {args.dev} @ {args.baud} 8N1{pace_desc}{gate_desc}")
 
     server = IgcFileServer(root, conn, verbose=args.verbose, frame_gap=args.frame_gap)
     try:

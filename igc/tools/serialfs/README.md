@@ -16,32 +16,61 @@ serve loop (the mirror of viclibc's C `ftx_serve_one`, from the PC's viewpoint).
         igcfs.py (server)                          igc (client)
 ```
 
-The link runs **8N1, 38400 baud with RTS/CTS hardware flow control** by default.
+The link runs **8N1, 38400 baud over a 3-wire cable (no hardware flow control)** by default.
 
-> **Why 38400 + RTS/CTS?** The Victor uses *polled* serial and gates the sender
-> with RTS during its between-packet work; the sender must honor CTS. Earlier the
-> default was 9600 because a USB-serial adapter (e.g. PL2303) buffers internally
-> and can't honor that gating with byte precision — at 38400 its bursts overflowed
-> the Victor's 3-byte receive FIFO and multi-byte packets were lost. A polled
-> receive fast path in viclibc (`serial/packet.c`) now drains that FIFO tightly
-> enough to keep up at 38400, so it is the default; RTS/CTS still covers the
-> multi-packet transfers. If your cable carries only TX/RX/GND (no handshake
-> lines), pass `--no-rtscts`; single-packet listings still work, but file
-> transfers may not. If a particular USB-serial adapter still drops packets at
-> 38400, fall back to `--baud 9600` (and set igc's pane to match). The Pico-based
-> rig runs 38400 reliably because it does byte-exact hardware flow control.
+> **Why 38400 on 3 wires?** The Victor uses *polled* serial and never toggles
+> RTS (the uPD7201's RTS is a static CR5 output), so RTS/CTS hardware flow
+> control is inert and the link is effectively 3-wire (TX/RX/GND). Earlier the
+> default was 9600 because at 38400 a USB-serial adapter's bursts overflowed the
+> Victor's 3-byte receive FIFO and multi-byte packets were lost. A polled receive
+> fast path in viclibc (`serial/packet.c`) now drains that FIFO tightly enough to
+> keep up at 38400, so it is the default — and the packet layer's ACK round-trip
+> brackets the Victor's between-packet work, so no line-level flow control is
+> needed. If a particular USB-serial adapter still drops packets at 38400, fall
+> back to `--baud 9600` (and set igc's pane to match), or use `--cts-gate` for
+> per-frame software pacing. The Pico-based rig runs 38400 reliably with
+> byte-exact timing.
 
-## Setup
+## Run (standalone executable — no Python needed)
+
+End users don't need Python installed. Build (or download) the single-file
+executable and run it from a terminal:
+
+```bat
+REM Windows
+igcfs.exe --root C:\victor --dev COM1 --baud 38400 -v
+```
+
+```sh
+# Linux / macOS
+./igcfs --root /srv/victor --dev /dev/ttyUSB0 --baud 38400 -v
+```
+
+### Building the executable
+
+The build bundles the interpreter, `pyserial`, and the vendored `v9kserial/` +
+`v9kfiletrx/` packages into one file via [PyInstaller](https://pyinstaller.org).
+PyInstaller **cannot cross-compile**, so build on the OS you want a binary for:
+
+```bat
+REM Windows  ->  dist\igcfs.exe
+build.bat
+```
+
+```sh
+# Linux / macOS  ->  dist/igcfs
+./build.sh
+```
+
+Both wrappers create a throwaway venv, install the build deps, and run
+`pyinstaller igcfs.spec`. The file in `dist/` is self-contained and ships alone.
+
+## Run from source (developers)
 
 ```sh
 cd igc/tools/serialfs
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-```
-
-## Run
-
-```sh
 .venv/bin/python igcfs.py --root /srv/victor --dev /dev/ttyUSB0 --baud 38400 -v
 ```
 
@@ -49,7 +78,6 @@ python3 -m venv .venv
 - `--dev`        serial device (default `/dev/ttyUSB0`).
 - `--baud`       line rate (default 38400; must match igc's pane setting,
                  which is `SERIALFS_BAUD_DEFAULT` in `src/serialfs.h`).
-- `--no-rtscts`  disable RTS/CTS flow control (default on; see note above).
 - `-v`           verbose request log.
 
 Files are presented to igc as uppercase 8.3 names (long/mixed-case names are

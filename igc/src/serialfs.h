@@ -21,10 +21,10 @@
 /* Fixed link configuration (these mirror the viclibc SER_PORT_* / SER_BAUD_*
  * indices so callers need not include the viclibc serial headers).
  *
- * Default is 9600: a direct USB-serial cable cannot honor the Victor's polled
- * RTS gating with byte precision (the adapter buffers internally), so higher
- * rates overflow the Victor's 3-byte receive FIFO on multi-byte packets. 9600
- * is slow enough that the Victor's tight poll loop keeps up without gating. */
+ * Default is 38400: the link is 3-wire with no hardware flow control, so the
+ * Victor's 3-byte receive FIFO can overrun on multi-byte packets unless the
+ * receiver keeps up. The viclibc packet layer uses a tight polled-receive fast
+ * path that drains the FIFO quickly enough to sustain 38400 without gating. */
 #define SERIALFS_PORT_A      0
 #define SERIALFS_BAUD_9600   6
 #define SERIALFS_BAUD_19200  7

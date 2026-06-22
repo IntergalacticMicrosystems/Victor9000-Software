@@ -63,7 +63,7 @@ mkdir (F2), and rename (F8). The path is shown as `SER:\...`. Remote files are
 presented as uppercase 8.3 names (long/mixed-case names are mangled to
 `NAME~1.EXT`).
 
-The link runs **8N1 at 38400 baud with RTS/CTS hardware flow control**.
+The link runs **8N1 at 38400 baud over a 3-wire cable (no hardware flow control)**.
 
 ### On the PC (server)
 
@@ -84,13 +84,12 @@ python3 -m venv .venv
 | `--root` | Directory to serve (server is sandboxed to it) |
 | `--dev` | Serial device (default `/dev/ttyUSB0`) |
 | `--baud` | Line rate (default 38400; must match the Victor's pane setting) |
-| `--no-rtscts` | Disable RTS/CTS flow control (listings still work; transfers may not) |
 | `-v` | Verbose request log |
 
-> **Cable note:** the Victor uses *polled* serial and gates the sender with RTS
-> between packets, so the cable must carry the handshake lines (RTS/CTS) for
-> reliable multi-packet file transfers. A plain TX/RX/GND cable can list a
-> directory but may drop transfers — see [`tools/serialfs/README.md`](tools/serialfs/README.md)
+> **Cable note:** the link is 3-wire (TX/RX/GND). The Victor uses *polled* serial
+> and never toggles RTS, so hardware flow control does nothing; reliable
+> multi-packet transfers come from the Victor's lean polled-receive path. A plain
+> TX/RX/GND cable is all you need — see [`tools/serialfs/README.md`](tools/serialfs/README.md)
 > for the full protocol and baud-rate notes.
 
 ## Installation

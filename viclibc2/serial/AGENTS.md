@@ -435,14 +435,16 @@ ways, `--rle`, listdir. Two findings were decisive:
    failed every time. Cutting to one MMIO fixed it. (The raw `spdtest` loop was
    already this lean, which is why it sustained 38400 while the first packet port
    did not.)
-2. **RTS gating replaces the ring throttle.** Polled mode has no ISR ring buffer
-   to absorb bytes during the receiver's between-packet disk write. Instead
-   `pkt_receive` (polled) deasserts RTS the instant after ACKing fresh data and
-   reasserts at the next `pkt_send`/`pkt_receive`; the peer honoring CTS pauses
-   while we are not polling. `pkt_send` also asserts RTS at entry so the peer's
-   ACKs are never gated. This is the per-packet equivalent of the old
-   `ser_set_rx_flow` watermark throttle, and works because the gate brackets the
-   non-polling window exactly.
+2. **No RTS gating — the link is 3-wire.** Polled mode has no ISR ring buffer to
+   absorb bytes during the receiver's between-packet disk write, and the uPD7201
+   does not auto-deassert RTS when its FIFO fills (see the software-only-RTS
+   finding above), so hardware RTS/CTS cannot throttle the peer per-byte. Instead
+   the receiver simply keeps up: the lean single-MMIO `ser_poll_read` (finding 1)
+   drains the 3-byte FIFO in well under a byte-time, and the packet protocol's
+   ACK round-trip already brackets the between-packet window — the sender blocks
+   for an ACK before sending the next packet, so it is paused while the receiver
+   does its disk write. `pkt_receive`/`pkt_send` never touch RTS; CR5 holds RTS
+   asserted statically from init.
 
 Polled mode is now the **only** mode: the interrupt-driven path and its ring
 buffers / `ser_int_*` API / `ser_set_rx_flow` watermark throttle were removed
