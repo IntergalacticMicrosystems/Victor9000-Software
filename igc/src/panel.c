@@ -90,21 +90,27 @@ bool_t panel_init(Panel *p, uint16_t capacity)
     p->sel_count = 0;
     p->backend = PANEL_DOS;
 
-    bytes = (uint32_t)capacity * sizeof(FileEntry);
-    p->files.entries = (FileEntry __far *)mem_alloc(bytes);
-
-    if (p->files.entries == (FileEntry __far *)0) {
-        p->files.capacity = 0;
-        p->files.count = 0;
-        p->files.truncated = FALSE;
-        return FALSE;
+    /* Allocate the file array, halving the requested capacity until it fits
+     * (down to PANEL_MIN_FILES). A smaller list still works - directories that
+     * overflow it set the truncated flag - so degrading beats failing to start
+     * when conventional memory is scarce (e.g. a 128K machine). */
+    while (capacity >= PANEL_MIN_FILES) {
+        bytes = (uint32_t)capacity * sizeof(FileEntry);
+        p->files.entries = (FileEntry __far *)mem_alloc(bytes);
+        if (p->files.entries != (FileEntry __far *)0) {
+            p->files.capacity = capacity;
+            p->files.count = 0;
+            p->files.truncated = FALSE;
+            return TRUE;
+        }
+        capacity = (uint16_t)(capacity / 2);
     }
 
-    p->files.capacity = capacity;
+    p->files.entries = (FileEntry __far *)0;
+    p->files.capacity = 0;
     p->files.count = 0;
     p->files.truncated = FALSE;
-
-    return TRUE;
+    return FALSE;
 }
 
 /*---------------------------------------------------------------------------

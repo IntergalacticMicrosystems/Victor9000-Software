@@ -17,9 +17,11 @@
 static Editor g_editor;
 static uint16_t __far *g_screen_save = (uint16_t __far *)0;
 
-/* Cut buffer for Ctrl-K/Ctrl-U (multi-line cut/paste) */
+/* Cut buffer for Ctrl-K/Ctrl-U (multi-line cut/paste). Allocated on the far
+ * heap on first cut (not held in DGROUP) and kept for the program lifetime so
+ * a cut survives closing one file and pasting into another. */
 #define CUT_BUF_SIZE 4096
-static char g_cut_buffer[CUT_BUF_SIZE];
+static char __far *g_cut_buffer = (char __far *)0;
 static uint16_t g_cut_len = 0;
 static bool_t g_last_was_cut = FALSE;  /* Track consecutive cuts */
 
@@ -27,6 +29,24 @@ static bool_t g_last_was_cut = FALSE;  /* Track consecutive cuts */
  * editor_init - Initialize editor module
  *---------------------------------------------------------------------------*/
 bool_t editor_init(void)
+{
+    /* The text buffer, line table and screen-save buffer are now allocated
+     * lazily when a file is opened (editor_acquire) and freed on close, so an
+     * idle IGC holds no editor heap - critical on a 128K machine. Nothing to
+     * allocate here; just make sure the pointers are clear. */
+    g_editor.buffer = (char __far *)0;
+    g_editor.line_offs = (uint16_t __far *)0;
+    g_screen_save = (uint16_t __far *)0;
+    g_cut_buffer = (char __far *)0;
+    g_cut_len = 0;
+    g_last_was_cut = FALSE;
+    return TRUE;
+}
+
+/*---------------------------------------------------------------------------
+ * editor_acquire - Allocate the editor's working buffers (on file open)
+ *---------------------------------------------------------------------------*/
+static bool_t editor_acquire(void)
 {
     uint8_t tier = mem_get_tier();
 
@@ -76,7 +96,9 @@ bool_t editor_init(void)
     g_screen_save = (uint16_t __far *)mem_alloc(80 * 25 * 2);
     if (g_screen_save == (uint16_t __far *)0) {
         mem_free(g_editor.line_offs);
+        g_editor.line_offs = (uint16_t __far *)0;
         mem_free(g_editor.buffer);
+        g_editor.buffer = (char __far *)0;
         return FALSE;
     }
 
@@ -84,9 +106,10 @@ bool_t editor_init(void)
 }
 
 /*---------------------------------------------------------------------------
- * editor_shutdown - Shutdown editor module
+ * editor_release - Free the editor's working buffers (on file close)
+ * The cut buffer is intentionally left allocated for cross-file paste.
  *---------------------------------------------------------------------------*/
-void editor_shutdown(void)
+static void editor_release(void)
 {
     if (g_screen_save != (uint16_t __far *)0) {
         mem_free(g_screen_save);
@@ -100,6 +123,19 @@ void editor_shutdown(void)
         mem_free(g_editor.buffer);
         g_editor.buffer = (char __far *)0;
     }
+}
+
+/*---------------------------------------------------------------------------
+ * editor_shutdown - Shutdown editor module
+ *---------------------------------------------------------------------------*/
+void editor_shutdown(void)
+{
+    editor_release();
+    if (g_cut_buffer != (char __far *)0) {
+        mem_free(g_cut_buffer);
+        g_cut_buffer = (char __far *)0;
+    }
+    g_cut_len = 0;
 }
 
 /*---------------------------------------------------------------------------
@@ -684,11 +720,20 @@ static void cut_line(void)
         g_cut_len = 0;
     }
 
+    /* Lazily allocate the cut buffer on first use (kept until shutdown). */
+    if (g_cut_buffer == (char __far *)0) {
+        g_cut_buffer = (char __far *)mem_alloc(CUT_BUF_SIZE);
+        g_cut_len = 0;
+    }
+
     /* Calculate how much we can copy (don't overflow cut buffer).
-       Compare via the remaining space - the sum can wrap at 16 bits. */
-    {
+       Compare via the remaining space - the sum can wrap at 16 bits.
+       With no cut buffer the line is still deleted, just not saved. */
+    if (g_cut_buffer != (char __far *)0) {
         uint16_t space = CUT_BUF_SIZE - 1 - g_cut_len;
         copy_len = (len > space) ? space : len;
+    } else {
+        copy_len = 0;
     }
 
     if (copy_len > 0) {
@@ -884,6 +929,11 @@ static void editor_run(void)
  *---------------------------------------------------------------------------*/
 void editor_view(const char *filename)
 {
+    if (!editor_acquire()) {
+        dlg_alert("View", "Not enough memory");
+        return;
+    }
+
     /* Save screen */
     scr_save_rect(0, 0, 80, 25, g_screen_save);
     scr_clear();
@@ -898,6 +948,7 @@ void editor_view(const char *filename)
 
     /* Restore screen */
     scr_restore_rect(0, 0, 80, 25, g_screen_save);
+    editor_release();
 }
 
 /*---------------------------------------------------------------------------
@@ -905,6 +956,11 @@ void editor_view(const char *filename)
  *---------------------------------------------------------------------------*/
 void editor_edit(const char *filename)
 {
+    if (!editor_acquire()) {
+        dlg_alert("Edit", "Not enough memory");
+        return;
+    }
+
     /* Save screen */
     scr_save_rect(0, 0, 80, 25, g_screen_save);
     scr_clear();
@@ -936,4 +992,5 @@ void editor_edit(const char *filename)
 
     /* Restore screen */
     scr_restore_rect(0, 0, 80, 25, g_screen_save);
+    editor_release();
 }

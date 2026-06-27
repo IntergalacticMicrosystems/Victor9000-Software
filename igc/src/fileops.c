@@ -30,17 +30,50 @@ static uint8_t g_dir_depth = 0;
  *---------------------------------------------------------------------------*/
 bool_t fops_init(void)
 {
+    /* The copy buffer is now allocated on demand around an actual copy/move
+     * (copybuf_acquire) and freed afterwards, so an idle IGC holds no copy
+     * heap. Nothing to allocate at startup. */
+    g_copy_buf = (uint8_t __far *)0;
+    g_copy_buf_size = 0;
+    return TRUE;
+}
+
+/*---------------------------------------------------------------------------
+ * copybuf_acquire - Allocate the copy buffer for a copy/move operation
+ * Idempotent: a no-op if the buffer is already held, so the recursive copy
+ * paths can call it per file yet only allocate once per batch.
+ *---------------------------------------------------------------------------*/
+static bool_t copybuf_acquire(void)
+{
+    if (g_copy_buf != (uint8_t __far *)0) {
+        return TRUE;
+    }
+
     /* Copy buffer size for the current tier, computed by mem_init */
     g_copy_buf_size = mem_get_copy_buf_size();
-
     g_copy_buf = (uint8_t __far *)mem_alloc(g_copy_buf_size);
     if (g_copy_buf == (uint8_t __far *)0) {
         /* Try smallest buffer */
         g_copy_buf_size = COPY_BUF_TINY;
         g_copy_buf = (uint8_t __far *)mem_alloc(g_copy_buf_size);
     }
+    if (g_copy_buf == (uint8_t __far *)0) {
+        g_copy_buf_size = 0;
+        return FALSE;
+    }
+    return TRUE;
+}
 
-    return (g_copy_buf != (uint8_t __far *)0) ? TRUE : FALSE;
+/*---------------------------------------------------------------------------
+ * copybuf_release - Free the copy buffer after a copy/move operation
+ *---------------------------------------------------------------------------*/
+static void copybuf_release(void)
+{
+    if (g_copy_buf != (uint8_t __far *)0) {
+        mem_free(g_copy_buf);
+        g_copy_buf = (uint8_t __far *)0;
+        g_copy_buf_size = 0;
+    }
 }
 
 /*---------------------------------------------------------------------------
@@ -48,10 +81,7 @@ bool_t fops_init(void)
  *---------------------------------------------------------------------------*/
 void fops_shutdown(void)
 {
-    if (g_copy_buf != (uint8_t __far *)0) {
-        mem_free(g_copy_buf);
-        g_copy_buf = (uint8_t __far *)0;
-    }
+    copybuf_release();
 }
 
 /*---------------------------------------------------------------------------
@@ -116,6 +146,13 @@ int fops_copy_file(const char *src, const char *dst)
     int16_t src_attr;
     uint16_t src_date = 0, src_time = 0;
     int result = FOPS_OK;
+
+    /* Ensure the copy buffer is allocated (no-op if a batch already holds it). */
+    if (!copybuf_acquire()) {
+        ui_error("Not enough memory for copy buffer");
+        kbd_wait();
+        return FOPS_ERROR;
+    }
 
     /* Copying a file onto itself would delete the source in the
        overwrite path below before it is ever opened */
@@ -703,6 +740,9 @@ int fops_copy(void)
 
     ui_hide_progress();
 
+    /* Release the copy buffer now the batch is done. */
+    copybuf_release();
+
     /* Refresh destination panel */
     panel_read_dir(dst_panel);
 
@@ -831,6 +871,10 @@ int fops_move(void)
     }
 
     ui_hide_progress();
+
+    /* Release the copy buffer now the batch is done (rename-only moves may
+     * never have allocated it; copybuf_release is a no-op then). */
+    copybuf_release();
 
     /* Refresh both panels */
     panel_read_dir(src_panel);

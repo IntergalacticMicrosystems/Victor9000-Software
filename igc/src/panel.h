@@ -33,6 +33,11 @@ typedef struct {
     bool_t   truncated;         /* TRUE if more files exist than capacity */
 } FileList;
 
+/* Smallest panel the allocator will fall back to before giving up. A short
+ * list still works - overflowing directories just set the truncated flag - so
+ * degrading is far better than refusing to start on a low-memory machine. */
+#define PANEL_MIN_FILES 16
+
 /*---------------------------------------------------------------------------
  * Panel Structure
  *---------------------------------------------------------------------------*/

@@ -35,9 +35,11 @@ static pkt_state_t g_pkt;
 static ftx_state_t g_ftx;
 static bool_t      g_connected = FALSE;
 
-/* Scratch buffer for building/reading short control packets, kept off the
- * 8 KB stack (igc is single-threaded, so a module-static is fine). */
-static uint8_t g_sfs_buf[PKT_MAX_PAYLOAD];
+/* Scratch buffer for building/reading short control packets. Allocated on the
+ * far heap in serialfs_connect (not held in DGROUP) and freed in
+ * serialfs_disconnect; every user is guarded by g_connected, so it is always
+ * present when touched. igc is single-threaded, so a module-static is fine. */
+static uint8_t __far *g_sfs_buf = (uint8_t __far *)0;
 
 /* Disk staging buffer for file transfers. viclibc2 no longer owns this - the
  * app allocates it and registers it with ftx_set_io_buffer. Sized by memory
@@ -74,8 +76,20 @@ bool_t serialfs_connect(uint8_t port, uint8_t baud_idx)
     }
     ftx_set_io_buffer(&g_ftx, (uint8_t *)g_io_buf, g_io_bufsize);
 
+    /* Control-packet scratch buffer (small, fixed PKT_MAX_PAYLOAD). */
+    g_sfs_buf = (uint8_t __far *)mem_alloc(PKT_MAX_PAYLOAD);
+    if (g_sfs_buf == (uint8_t __far *)0) {
+        mem_free(g_io_buf);
+        g_io_buf = (uint8_t __far *)0;
+        g_io_bufsize = 0;
+        g_connected = FALSE;
+        return FALSE;
+    }
+
     /* Resync sequence bits with the server. Fails if nothing answers. */
     if (!pkt_send_reset(&g_pkt)) {
+        mem_free(g_sfs_buf);
+        g_sfs_buf = (uint8_t __far *)0;
         mem_free(g_io_buf);
         g_io_buf = (uint8_t __far *)0;
         g_io_bufsize = 0;
@@ -90,7 +104,9 @@ bool_t serialfs_connect(uint8_t port, uint8_t baud_idx)
 void serialfs_disconnect(void)
 {
     /* Leave the remote server running (it may serve later reconnects); just
-     * forget the local session and release the staging buffer. */
+     * forget the local session and release the staging buffers. */
+    mem_free(g_sfs_buf);
+    g_sfs_buf = (uint8_t __far *)0;
     mem_free(g_io_buf);
     g_io_buf = (uint8_t __far *)0;
     g_io_bufsize = 0;
