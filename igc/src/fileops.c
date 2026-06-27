@@ -431,9 +431,10 @@ static uint16_t count_selected_files(Panel *p)
 /*---------------------------------------------------------------------------
  * fops_copy_serial - Copy/move files between a local panel and a serial panel
  *
- * Handles one DOS panel and one serial panel (file transfers only; directory
- * trees and serial-to-serial are refused). Selected files, or the cursor file
- * if none are selected.
+ * Handles one DOS panel and one serial panel (serial-to-serial is refused).
+ * Files transfer directly; directories copy recursively (single or nested) via
+ * the serialfs tree helpers. Selected items, or the cursor item if none are
+ * selected.
  *---------------------------------------------------------------------------*/
 static int fops_copy_serial(Panel *src, Panel *dst, int move)
 {
@@ -467,13 +468,6 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
             if (selected == 0) break;
             continue;
         }
-        if (file_is_dir(f)) {
-            ui_error("Directories not supported over serial");
-            kbd_wait();
-            if (selected == 0) break;
-            continue;
-        }
-
         g_file_current++;
         ui_show_progress(move ? "Moving" : "Copying", f->name,
                          g_file_current, g_file_count);
@@ -482,14 +476,24 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
             /* Serial -> local (download) */
             serialfs_build_rel(src, f->name, remote);
             path_build(local, dst->drive, dst->path, f->name);
-            rc = serialfs_get_file(remote, local);
-            if (rc == 0 && move) serialfs_delete(remote);
+            if (file_is_dir(f)) {
+                rc = serialfs_get_tree(remote, local);
+                if (rc == 0 && move) serialfs_delete_tree(remote);
+            } else {
+                rc = serialfs_get_file(remote, local);
+                if (rc == 0 && move) serialfs_delete(remote);
+            }
         } else {
             /* Local -> serial (upload) */
             path_build(local, src->drive, src->path, f->name);
             serialfs_build_rel(dst, f->name, remote);
-            rc = serialfs_put_file(local, remote);
-            if (rc == 0 && move) fops_delete_file(local);
+            if (file_is_dir(f)) {
+                rc = serialfs_put_tree(local, remote);
+                if (rc == 0 && move) fops_delete_dir(local);
+            } else {
+                rc = serialfs_put_file(local, remote);
+                if (rc == 0 && move) fops_delete_file(local);
+            }
         }
         if (rc != 0) {
             ui_error("Serial transfer failed");
@@ -530,7 +534,8 @@ static int fops_delete_serial(Panel *panel)
         }
         serialfs_build_rel(panel, f->name, remote);
         ui_show_progress("Deleting", f->name, 0, 1);
-        if (serialfs_delete(remote) != 0) {
+        if ((file_is_dir(f) ? serialfs_delete_tree(remote)
+                            : serialfs_delete(remote)) != 0) {
             ui_error("Cannot delete on server");
             kbd_wait();
             result = FOPS_ERROR;
@@ -551,7 +556,8 @@ static int fops_delete_serial(Panel *panel)
             serialfs_build_rel(panel, f->name, remote);
             g_file_current++;
             ui_show_progress("Deleting", f->name, g_file_current, g_file_count);
-            if (serialfs_delete(remote) != 0) {
+            if ((file_is_dir(f) ? serialfs_delete_tree(remote)
+                                : serialfs_delete(remote)) != 0) {
                 result = FOPS_ERROR;
             }
         }

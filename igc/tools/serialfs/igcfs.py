@@ -18,6 +18,9 @@ Wire protocol (per request, all carried as reliable DATA packets):
   - LIST   (0x15): reply one or more LIST_RESP (0x16) pages of 8.3 dir entries.
   - START  (0x10):
         direction VICTOR_TO_PC -> Victor is pushing a file: we RECEIVE & store.
+            A bare-basename filename lands in the last-LISTed dir (cwd); a
+            path-qualified filename (contains a separator) is stored under root,
+            which is how igc copies whole directory trees.
         direction PC_TO_VICTOR  -> Victor is pulling a file: we SEND it.
   - DELETE (0x1A) / MKDIR (0x1B) / RENAME (0x1C): filesystem op, reply OK/ERROR.
   - QUIT   (0x1F): stop serving.
@@ -190,17 +193,35 @@ class IgcFileServer:
     # --- path helpers ------------------------------------------------------
 
     def _resolve(self, rel):
-        """Map a Victor relative path to a real path under root (sandboxed)."""
+        """Map a Victor relative path to a real path under root (sandboxed).
+
+        Every component is reverse-mapped through its parent directory's 8.3 DOS
+        map, so a mangled name (e.g. MYDOCU~1) resolves to its real on-disk name
+        (e.g. 'My Documents') at *each* level - not just the last. This is what
+        lets igc browse into and copy long-named directories. A component that
+        doesn't match a real entry (e.g. a not-yet-created dir) passes through
+        literally; the DOS map is only consulted while still inside the sandbox."""
         rel = (rel or '').replace('\\', '/').strip('/')
-        target = (self.root / rel).resolve() if rel else self.root
+        target = self.root
+        for part in (rel.split('/') if rel else []):
+            if part in ('', '.'):
+                continue
+            if part == '..':
+                target = target.parent
+                continue
+            inside = (target == self.root or self.root in target.parents)
+            real = build_dos_map(target).get(part.upper(), part) if inside else part
+            target = target / real
+        target = target.resolve()
         # Reject escapes outside the sandbox root.
         if target != self.root and self.root not in target.parents:
             raise PermissionError(f"path escapes root: {rel!r}")
         return target
 
     def _resolve_dir_and_name(self, rel):
-        """Split a relative path into (real_dir, real_basename) resolving the
-        final 8.3 component against the directory's DOS map."""
+        """Split a relative path into (real_dir, real_basename), mapping the
+        parent components via _resolve and the final 8.3 component against the
+        parent directory's DOS map."""
         rel = (rel or '').replace('\\', '/').strip('/')
         if '/' in rel:
             parent_rel, dosname = rel.rsplit('/', 1)
@@ -368,11 +389,21 @@ class IgcFileServer:
     # --- upload (Victor pushes a file to us) -------------------------------
 
     def handle_upload(self, start):
-        # START carries only a basename; place it in the directory igc is
-        # viewing (tracked from the last LIST).
+        # START carries either a bare basename - placed in the directory igc is
+        # viewing (tracked from the last LIST) - or, for directory-tree copies, a
+        # path-qualified name (it contains a separator) resolved under root. The
+        # latter lets igc push files into subdirectories without first LISTing
+        # each one; parents are auto-created by _recv_after_start.
+        name = start.filename
         try:
-            dest_dir = self._resolve(self.cwd)
-            dest = dest_dir / start.filename
+            if '\\' in name or '/' in name:
+                rel = name.replace('\\', '/').strip('/')
+                parent_rel, base = (rel.rsplit('/', 1) if '/' in rel else ('', rel))
+                dest_dir = self._resolve(parent_rel)
+                dest = dest_dir / base
+            else:
+                dest_dir = self._resolve(self.cwd)
+                dest = dest_dir / name
             if self.root not in dest.resolve().parents and dest.resolve() != self.root:
                 # dest must be strictly inside root
                 if self.root not in dest.parents:

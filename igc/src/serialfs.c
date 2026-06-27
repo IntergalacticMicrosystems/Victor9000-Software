@@ -11,6 +11,8 @@
 #include "util.h"
 #include "ui.h"
 #include "mem.h"
+#include "dosapi.h"
+#include "keyboard.h"
 
 /* The viclibc structs are 1-byte packed on the wire (the library is built
  * -zp1). igc itself uses its default packing, so wrap these includes in
@@ -455,4 +457,327 @@ int serialfs_rename(const char *old_rel, const char *new_rel)
         return -1;
     }
     return sfs_wait_ok();
+}
+
+/*---------------------------------------------------------------------------
+ * Directory-tree transfer (recursive copy/delete of whole directories)
+ *
+ * Local walks use the DOS find_first/find_next cursor held in a per-level stack
+ * DTA, exactly like fops_copy_dir. Remote walks can't recurse mid-listing -
+ * ftx_list_dir streams entries through a callback and a new request can't be
+ * issued until it finishes - so each level's entries are first stashed in a
+ * far-heap "walk arena" used as a LIFO across the recursion, then processed.
+ *---------------------------------------------------------------------------*/
+
+#define SFS_TREE_MAX_DEPTH 24       /* mirrors fileops.c MAX_DIR_DEPTH */
+
+/* Compact arena record: only what the recursion needs to decide and name. */
+typedef struct {
+    char    name[13];
+    uint8_t attr;
+} sfs_walk_ent;
+
+static sfs_walk_ent __far *g_walk = (sfs_walk_ent __far *)0;
+static uint16_t g_walk_cap = 0;     /* arena capacity, in entries        */
+static uint16_t g_walk_used = 0;    /* entries currently live (all levels) */
+static uint8_t  g_tree_depth = 0;   /* recursion guard for tree ops       */
+
+/* ESC between files aborts a tree op (each file already has its own bar). */
+static bool_t sfs_tree_cancelled(void)
+{
+    if (kbd_check()) {
+        KeyEvent k = kbd_get();
+        if (k.type == KEY_ASCII && k.code == KEY_ESC) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* One allocation serves a whole (possibly nested) remote walk; freed at the end.
+ * 8 KB (~585 entries summed across the active path) comfortably exceeds any
+ * realistic Victor tree; on overflow the op aborts cleanly. */
+static bool_t sfs_walk_alloc(void)
+{
+    g_walk_cap = (uint16_t)(8192 / sizeof(sfs_walk_ent));
+    g_walk = (sfs_walk_ent __far *)mem_alloc((uint32_t)g_walk_cap * sizeof(sfs_walk_ent));
+    if (g_walk == (sfs_walk_ent __far *)0) {
+        g_walk_cap = (uint16_t)(1024 / sizeof(sfs_walk_ent));
+        g_walk = (sfs_walk_ent __far *)mem_alloc((uint32_t)g_walk_cap * sizeof(sfs_walk_ent));
+    }
+    g_walk_used = 0;
+    g_tree_depth = 0;
+    return (g_walk != (sfs_walk_ent __far *)0) ? TRUE : FALSE;
+}
+
+static void sfs_walk_free(void)
+{
+    if (g_walk != (sfs_walk_ent __far *)0) {
+        mem_free(g_walk);
+        g_walk = (sfs_walk_ent __far *)0;
+    }
+    g_walk_cap = 0;
+    g_walk_used = 0;
+}
+
+/* ftx_list_dir callback: append each real entry (skip "." / "..") to the arena.
+ * On overflow it flags the caller but keeps returning 0 so ftx_list_dir drains
+ * the remaining response pages - stopping early would desync the packet stream. */
+static int sfs_walk_cb(const ftx_dir_entry_t *e, void *user_data)
+{
+    bool_t *overflow = (bool_t *)user_data;
+
+    if (e->name[0] == '.' &&
+        (e->name[1] == '\0' || (e->name[1] == '.' && e->name[2] == '\0'))) {
+        return 0;
+    }
+    if (g_walk_used >= g_walk_cap) {
+        *overflow = TRUE;               /* keep draining; just stop storing */
+        return 0;
+    }
+    str_copy_n(g_walk[g_walk_used].name, e->name, 13);
+    g_walk[g_walk_used].attr = e->attr;
+    g_walk_used++;
+    return 0;
+}
+
+/*---------------------------------------------------------------------------
+ * Download a remote tree (server -> local). Recurses depth-first.
+ *---------------------------------------------------------------------------*/
+static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
+{
+    char rchild[MAX_FULL_PATH];
+    char lchild[MAX_FULL_PATH];
+    uint16_t base, end, i;
+    bool_t overflow = FALSE;
+    int result = 0;
+
+    if (g_tree_depth >= SFS_TREE_MAX_DEPTH) {
+        ui_error("Directory tree too deep");
+        kbd_wait();
+        return -1;
+    }
+
+    /* Create the local destination directory. */
+    if (dos_mkdir(local_path) != 0 && !dos_exists(local_path)) {
+        ui_error("Cannot create directory");
+        kbd_wait();
+        return -1;
+    }
+
+    /* Collect this directory's entries into the arena above the current mark. */
+    base = g_walk_used;
+    if (ftx_list_dir(&g_ftx, remote_rel, sfs_walk_cb, &overflow) < 0) {
+        ui_error("Serial server not responding");
+        kbd_wait();
+        g_walk_used = base;
+        return -1;
+    }
+    if (overflow) {
+        ui_error("Directory too large to copy");
+        kbd_wait();
+        g_walk_used = base;
+        return -1;
+    }
+    end = g_walk_used;
+
+    g_tree_depth++;
+    for (i = base; i < end && result == 0; i++) {
+        char    name[13];
+        uint8_t attr;
+
+        str_copy_n(name, g_walk[i].name, sizeof(name));
+        attr = g_walk[i].attr;
+
+        str_copy(rchild, remote_rel);
+        path_append(rchild, name);
+        str_copy(lchild, local_path);
+        path_append(lchild, name);
+
+        if (attr & DOS_ATTR_DIRECTORY) {
+            if (sfs_get_tree_r(rchild, lchild) != 0) {
+                result = -1;
+            }
+        } else if (serialfs_get_file(rchild, lchild) != 0) {
+            result = -1;
+        }
+
+        if (result == 0 && sfs_tree_cancelled()) {
+            result = -1;
+        }
+    }
+    g_tree_depth--;
+
+    g_walk_used = base;                 /* pop this level's entries */
+    return result;
+}
+
+/*---------------------------------------------------------------------------
+ * Upload a local tree (local -> server). The local side is walked with the DOS
+ * find cursor (per-level DTA, like fops_copy_dir); files are pushed with a
+ * path-qualified name so the server stores them under the right subdirectory.
+ *---------------------------------------------------------------------------*/
+static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
+{
+    char src_child[MAX_FULL_PATH];
+    char rchild[MAX_FULL_PATH];
+    char pattern[MAX_FULL_PATH];
+    DTA dta;
+    DTA __far *old_dta;
+    int result = 0;
+
+    if (g_tree_depth >= SFS_TREE_MAX_DEPTH) {
+        ui_error("Directory tree too deep");
+        kbd_wait();
+        return -1;
+    }
+
+    /* Create the remote directory. Best effort: it may already exist, and file
+       uploads auto-create parents server-side; this also covers empty dirs. */
+    serialfs_mkdir(remote_rel);
+
+    str_copy(pattern, local_path);
+    path_append(pattern, "*.*");
+
+    g_tree_depth++;
+    old_dta = dos_get_dta();
+    dos_set_dta(&dta);
+
+    if (dos_find_first(pattern, 0x37) == 0) {
+        do {
+            if (dta.name[0] == '.' &&
+                (dta.name[1] == '\0' ||
+                 (dta.name[1] == '.' && dta.name[2] == '\0'))) {
+                continue;
+            }
+
+            str_copy(src_child, local_path);
+            path_append(src_child, dta.name);
+            str_copy(rchild, remote_rel);
+            path_append(rchild, dta.name);
+
+            if (dta.attr & DOS_ATTR_DIRECTORY) {
+                result = sfs_put_tree_r(src_child, rchild);
+            } else {
+                /* serialfs_put_named lays down the per-file progress bar. */
+                result = serialfs_put_named(src_child, rchild);
+            }
+
+            if (result == 0 && sfs_tree_cancelled()) {
+                result = -1;
+            }
+        } while (result == 0 && dos_find_next() == 0);
+    }
+
+    dos_set_dta(old_dta);
+    g_tree_depth--;
+    return result;
+}
+
+/*---------------------------------------------------------------------------
+ * Delete a remote tree (files, then subdirs, then the directory itself).
+ *---------------------------------------------------------------------------*/
+static int sfs_delete_tree_r(const char *remote_rel)
+{
+    char rchild[MAX_FULL_PATH];
+    uint16_t base, end, i;
+    bool_t overflow = FALSE;
+    int result = 0;
+
+    if (g_tree_depth >= SFS_TREE_MAX_DEPTH) {
+        ui_error("Directory tree too deep");
+        kbd_wait();
+        return -1;
+    }
+
+    base = g_walk_used;
+    if (ftx_list_dir(&g_ftx, remote_rel, sfs_walk_cb, &overflow) < 0) {
+        ui_error("Serial server not responding");
+        kbd_wait();
+        g_walk_used = base;
+        return -1;
+    }
+    if (overflow) {
+        ui_error("Directory too large to delete");
+        kbd_wait();
+        g_walk_used = base;
+        return -1;
+    }
+    end = g_walk_used;
+
+    g_tree_depth++;
+    for (i = base; i < end && result == 0; i++) {
+        char    name[13];
+        uint8_t attr;
+
+        str_copy_n(name, g_walk[i].name, sizeof(name));
+        attr = g_walk[i].attr;
+
+        str_copy(rchild, remote_rel);
+        path_append(rchild, name);
+
+        ui_show_progress("Deleting", name, 0, 1);
+        if (attr & DOS_ATTR_DIRECTORY) {
+            if (sfs_delete_tree_r(rchild) != 0) {
+                result = -1;
+            }
+        } else if (serialfs_delete(rchild) != 0) {
+            result = -1;
+        }
+
+        if (result == 0 && sfs_tree_cancelled()) {
+            result = -1;
+        }
+    }
+    g_tree_depth--;
+    g_walk_used = base;
+
+    /* The directory is now empty; remove it (server rmdir). */
+    if (result == 0 && serialfs_delete(remote_rel) != 0) {
+        result = -1;
+    }
+    return result;
+}
+
+int serialfs_get_tree(const char *remote_rel, const char *local_path)
+{
+    int rc;
+
+    if (!g_connected) {
+        return -1;
+    }
+    if (!sfs_walk_alloc()) {
+        ui_error("Out of memory for directory copy");
+        kbd_wait();
+        return -1;
+    }
+    rc = sfs_get_tree_r(remote_rel, local_path);
+    sfs_walk_free();
+    return rc;
+}
+
+int serialfs_put_tree(const char *local_path, const char *remote_rel)
+{
+    if (!g_connected) {
+        return -1;
+    }
+    g_tree_depth = 0;
+    return sfs_put_tree_r(local_path, remote_rel);
+}
+
+int serialfs_delete_tree(const char *remote_rel)
+{
+    int rc;
+
+    if (!g_connected) {
+        return -1;
+    }
+    if (!sfs_walk_alloc()) {
+        ui_error("Out of memory for directory delete");
+        kbd_wait();
+        return -1;
+    }
+    rc = sfs_delete_tree_r(remote_rel);
+    sfs_walk_free();
+    return rc;
 }

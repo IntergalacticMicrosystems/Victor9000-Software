@@ -23,7 +23,7 @@
 - **Dynamic memory scaling** - Works on systems from 128KB to 512KB+ RAM
 - **Fast display** - Direct VRAM access for responsive UI
 - **Session persistence** - Remembers your last directory locations
-- **Serial file transfer** - Browse a directory on a modern PC over a serial cable and copy files to/from the Victor
+- **Serial file transfer** - Browse a directory on a modern PC over a serial cable and copy files and whole directory trees to/from the Victor
 
 ## Keyboard Controls
 
@@ -63,9 +63,10 @@ the Victor without floppies.
 Press **F1** (Change drive) on a pane and select **Serial A** at the bottom of
 the drive list. The pane then browses the directory served by the PC and
 supports the usual operations: browse, view/edit, copy in/out (F5), delete (F6),
-mkdir (F2), and rename (F8). The path is shown as `SER:\...`. Remote files are
-presented as uppercase 8.3 names (long/mixed-case names are mangled to
-`NAME~1.EXT`).
+mkdir (F2), and rename (F8). Copy/move (F5) and delete (F6) handle whole
+directories too — a selected folder is copied recursively (single or nested) in
+either direction. The path is shown as `SER:\...`. Remote files are presented as
+uppercase 8.3 names (long/mixed-case names are mangled to `NAME~1.EXT`).
 
 The link runs **8N1 at 38400 baud over a 3-wire cable (no hardware flow control)**.
 

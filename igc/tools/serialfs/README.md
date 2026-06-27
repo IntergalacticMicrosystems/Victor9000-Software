@@ -83,7 +83,10 @@ python3 -m venv .venv
 
 Files are presented to igc as uppercase 8.3 names (long/mixed-case names are
 mangled `NAME~1.EXT` deterministically). Supported from igc: browse, view/edit,
-copy in/out, delete, mkdir, rename.
+copy in/out, delete, mkdir, rename. Directories copy recursively (single or
+nested) in either direction: igc walks the tree and pushes/pulls each file. An
+upload whose name carries a path separator is stored under that subdirectory
+(parents auto-created); a bare name still lands in the last-listed directory.
 
 ## Self-test (no Victor required)
 

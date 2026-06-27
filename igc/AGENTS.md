@@ -49,10 +49,12 @@ Uses far pointers (`__far`) for data larger than 64KB. Memory tier detection at 
 | `panel.c/h` | File list management, directory reading |
 | `ui.c/h` | Frame drawing, headers, F-key bar |
 | `dialog.c/h` | Modal dialogs with screen save/restore |
-| `fileops.c/h` | Copy, move, delete, mkdir, rename |
+| `fileops.c/h` | Copy, move, delete, mkdir, rename (local + serial, incl. recursive directory trees) |
 | `editor.c/h` | Text viewer (F3) and editor (F4) |
 | `util.c/h` | String/path utilities |
 | `config.c/h` | INI file persistence |
+| `serialfs.c/h` | Serial file-server backend (igcfs over viclibc); file + directory-tree transfer, list, delete, mkdir, rename |
+| `serialfs_proto.h` | igc↔igcfs protocol extension command bytes |
 
 ## Key Data Structures
 

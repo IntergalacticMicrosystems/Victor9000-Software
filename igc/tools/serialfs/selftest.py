@@ -140,6 +140,8 @@ def main():
         (rootp / 'a-long-name.dat').write_bytes(bytes(range(256)) * 20)  # 8.3 mangle
         (rootp / 'SUB').mkdir()
         (rootp / 'SUB' / 'INNER.TXT').write_bytes(b'inner file')
+        (rootp / 'Long Dir Name').mkdir()  # mangled dir name (8.3 won't fit)
+        (rootp / 'Long Dir Name' / 'INSIDE.TXT').write_bytes(b'inside long dir')
 
         srv_conn, cli_conn = BridgedConnection.pair()
         srv_conn.connect()
@@ -166,6 +168,19 @@ def main():
         check("list SUB: '..' offered", '..' in subnames)
         check("list SUB: INNER.TXT present", 'INNER.TXT' in subnames)
 
+        # --- long-named (mangled) directory: every path component is reverse-
+        #     mapped, so we can browse into and transfer through it ---
+        longdir = next(e['name'] for e in entries
+                       if e['is_dir'] and '~' in e['name'])
+        ldnames = {e['name'] for e in igc_list(pkt, longdir)}
+        check("list into mangled dir", 'INSIDE.TXT' in ldnames)
+        check("download from mangled dir",
+              igc_download(pkt, longdir + '\\INSIDE.TXT') == b'inside long dir')
+        igc_list(pkt, '')  # reset cwd to root
+        igc_upload(pkt, b'Z' * 100, longdir + '\\PUT.BIN')
+        check("upload into mangled dir",
+              (rootp / 'Long Dir Name' / 'PUT.BIN').read_bytes() == b'Z' * 100)
+
         # --- download (Victor pulls) ---
         got = igc_download(pkt, 'HELLO.TXT')
         check("download HELLO.TXT bytes match", got == b'hello victor\r\n')
@@ -179,6 +194,15 @@ def main():
         payload = b'X' * 3000  # spans 3 chunks
         igc_upload(pkt, payload, 'NEWFILE.BIN')
         check("upload created file", (rootp / 'NEWFILE.BIN').read_bytes() == payload)
+
+        # --- path-qualified upload (directory tree): name carries a separator,
+        #     so the server stores it under root and auto-creates the parents,
+        #     regardless of cwd. This is how igc copies whole directories. ---
+        igc_list(pkt, 'SUB')  # point cwd elsewhere to prove it is ignored
+        tree_payload = b'Y' * 2500
+        igc_upload(pkt, tree_payload, 'TREE\\DEEP\\LEAF.BIN')
+        check("path-qualified upload created nested file",
+              (rootp / 'TREE' / 'DEEP' / 'LEAF.BIN').read_bytes() == tree_payload)
 
         # --- mkdir / rename / delete (explicit relative paths) ---
         ok, _ = igc_simple(pkt, bytes([CMD_MKDIR]) + _p('MADE'))

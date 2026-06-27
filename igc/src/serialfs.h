@@ -51,6 +51,17 @@ int serialfs_get_file(const char *remote_rel, const char *local_path);
  * directory igc last listed - i.e. the serial panel's current directory. */
 int serialfs_put_file(const char *local_path, const char *remote_rel);
 
+/* Recursively copy a whole directory tree (single or nested) between the server
+ * and local disk. remote_rel is server-relative; local_path is a full DOS path.
+ * They mkdir the destination root, then walk it depth-first. 0 on success. */
+int serialfs_get_tree(const char *remote_rel, const char *local_path);
+int serialfs_put_tree(const char *local_path, const char *remote_rel);
+
+/* Recursively delete a remote directory tree (its files, then its subdirs, then
+ * the directory itself). Needed when a directory move downloads then removes the
+ * server-side source. 0 on success. */
+int serialfs_delete_tree(const char *remote_rel);
+
 /* Directory operations on the server (remote relative paths). 0 on success. */
 int serialfs_delete(const char *remote_rel);
 int serialfs_mkdir(const char *remote_rel);
