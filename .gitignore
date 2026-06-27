@@ -1,5 +1,6 @@
 igc/obj/
 igc/bin/keytest.exe
+mem/obj/
 *.map
 *.err
 *.lst
