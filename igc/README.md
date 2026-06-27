@@ -20,7 +20,7 @@
 - **Dual-pane interface** - Navigate two directories simultaneously
 - **File operations** - Copy, move, delete, rename files and directories
 - **Built-in editor** - View and edit text files
-- **Dynamic memory scaling** - Works on systems from 128KB to 512KB+ RAM
+- **Dynamic memory scaling** - Works on systems from 256KB to 512KB+ RAM
 - **Fast display** - Direct VRAM access for responsive UI
 - **Session persistence** - Remembers your last directory locations
 - **Serial file transfer** - Browse a directory on a modern PC over a serial cable and copy files and whole directory trees to/from the Victor
@@ -117,7 +117,7 @@ Output: `bin/igc.exe` (~30KB)
 
 - Victor 9000 / Sirius 1 computer
 - DOS 3.1 or compatible
-- Minimum 128KB RAM (scales with available memory)
+- Minimum 256KB RAM (scales with available memory)
 
 ### Memory Scaling
 

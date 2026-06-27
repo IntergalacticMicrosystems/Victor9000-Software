@@ -20,7 +20,7 @@ make deploy-keytest  # Deploy keytest.exe to the MAME disk image
 ### Target Platform
 - Victor 9000 / Sirius 1 computer
 - DOS 3.1, 8086 processor (16-bit real mode)
-- Minimum 128KB RAM, scales to 512KB+
+- Minimum 256KB RAM, scales to 512KB+
 - 80x25 text mode with direct VRAM access
 
 ### Compiler Settings
