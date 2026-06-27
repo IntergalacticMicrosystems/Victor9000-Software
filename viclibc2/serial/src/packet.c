@@ -694,6 +694,7 @@ int16_t pkt_receive(pkt_state_t *state, uint8_t *buf, uint16_t maxlen) {
     uint8_t type;
     uint8_t seq;
     int16_t result;
+    uint8_t recv_retries = state->retries;  /* budget for transient RX errors */
 
     for (;;) {
         /* Wait for sync */
@@ -706,9 +707,20 @@ int16_t pkt_receive(pkt_state_t *state, uint8_t *buf, uint16_t maxlen) {
         result = pkt_recv_raw(state, &type, buf, maxlen);
 
         if (result < 0) {
-            /* Error - send NAK */
+            /* Transient framing/CRC/overrun error. The usual cause on the Victor
+             * is an interrupt - notably the keyboard's make/break - stealing
+             * cycles from the polled capture loop so the 3-byte RX FIFO overran
+             * mid-frame. NAK so the sender retransmits, then keep listening: by
+             * the time the retransmit arrives the disrupting ISR is long done and
+             * it captures cleanly. Bounded by the same retry budget pkt_send uses,
+             * so a genuinely dead/garbage link still gives up rather than spin.
+             * (A pure no-sync idle is handled above by pkt_wait_sync, not here.) */
             pkt_send_nak(state);
-            return result;
+            if (recv_retries == 0) {
+                return result;
+            }
+            recv_retries--;
+            continue;
         }
 
         if ((type & PKT_TYPE_MASK) == PKT_TYPE_RESET) {
