@@ -50,11 +50,21 @@ static uint8_t __far *g_sfs_buf = (uint8_t __far *)0;
 static uint8_t __far *g_io_buf = (uint8_t __far *)0;
 static uint16_t       g_io_bufsize = 0;
 
+/* Defined with the control commands below; also consumes the server's
+ * post-END upload status in serialfs_put_named. */
+static int sfs_wait_ok(void);
+
 /*---------------------------------------------------------------------------
  * Connection management
  *---------------------------------------------------------------------------*/
 bool_t serialfs_connect(uint8_t port, uint8_t baud_idx)
 {
+    /* Reconnecting replaces the session: free the old buffers first or the
+     * reallocation below would leak their DOS blocks for the whole run. */
+    if (g_connected) {
+        serialfs_disconnect();
+    }
+
     ser_init();                         /* both ports 8N1 */
     ser_set_baud(port, baud_idx);
     pkt_init_polled(&g_pkt, port);      /* polled mode - no ISR on this port */
@@ -124,6 +134,7 @@ bool_t serialfs_is_connected(void)
 typedef struct {
     Panel   *p;
     uint16_t count;
+    bool_t   overflow;
 } sfs_list_ctx;
 
 /* Called by ftx_list_dir for each remote entry; append it to the file list. */
@@ -132,9 +143,14 @@ static int sfs_list_cb(const ftx_dir_entry_t *e, void *user_data)
     sfs_list_ctx *ctx = (sfs_list_ctx *)user_data;
     FileEntry __far *fe;
 
-    /* Stop if the panel is full (caller marks the list truncated). */
+    /* Panel full: stop storing but KEEP returning 0 so ftx_list_dir drains
+     * the server's remaining response pages. Returning nonzero makes it bail
+     * with pages still queued, and the next request would read one of those
+     * stale LIST_RESP packets instead of its own reply (same rule as
+     * sfs_walk_cb below). The caller marks the list truncated. */
     if (ctx->count >= ctx->p->files.capacity) {
-        return 1;
+        ctx->overflow = TRUE;
+        return 0;
     }
 
     /* Skip a stray "." (the server normally omits it; ".." is kept). */
@@ -162,6 +178,13 @@ int serialfs_read_dir(Panel *p)
         return -1;
     }
 
+    /* The LIST request's path field holds FTX_MAX_FILENAME-1 chars; a longer
+     * path would be silently truncated and list some other directory. */
+    if (str_len(p->path) >= FTX_MAX_FILENAME) {
+        ui_error("Remote path too long");
+        return -1;
+    }
+
     ui_status("Reading server...");
 
     p->files.count = 0;
@@ -170,12 +193,11 @@ int serialfs_read_dir(Panel *p)
 
     ctx.p = p;
     ctx.count = 0;
+    ctx.overflow = FALSE;
     rc = ftx_list_dir(&g_ftx, p->path, sfs_list_cb, &ctx);
 
     p->files.count = ctx.count;
-    if (ctx.count >= p->files.capacity) {
-        p->files.truncated = TRUE;
-    }
+    p->files.truncated = ctx.overflow;
 
     /* Match the local panel's ordering (".." first, dirs, then alpha). */
     panel_sort(p);
@@ -231,6 +253,12 @@ int serialfs_get_file(const char *remote_rel, const char *local_path)
         return -1;
     }
 
+    /* The START filename field holds FTX_MAX_FILENAME-1 chars; refuse rather
+     * than silently truncate and fetch some other path. */
+    if (str_len(remote_rel) >= FTX_MAX_FILENAME) {
+        return -1;
+    }
+
     /* Request packet: a START whose direction asks the server to SEND the
      * named file. We then receive it with the stock receive path. */
     mem_set_far(&req, 0, sizeof(req));
@@ -278,6 +306,12 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
     if (!g_connected) {
         return -1;
     }
+
+    /* Refuse names the START packet cannot carry (see serialfs_get_file). */
+    if (str_len(remote_name) >= FTX_MAX_FILENAME) {
+        return -1;
+    }
+
     fh = ftx_file_open(local_path, FTX_OPEN_READ);
     if (fh == FTX_FILE_INVALID) {
         return -1;
@@ -379,7 +413,13 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
     if (pkt_send(&g_pkt, (const uint8_t *)&end, sizeof(end)) < 0) {
         return -1;
     }
-    return 0;
+
+    /* The server verifies the whole-file CRC and stores the file atomically,
+     * then reports the outcome. Without this a store that failed server-side
+     * (CRC mismatch, disk error) would look like success here. Requires an
+     * igcfs that sends the post-END status; against an older server this
+     * times out and reports the upload as failed. */
+    return sfs_wait_ok();
 }
 
 int serialfs_put_file(const char *local_path, const char *remote_rel)
@@ -441,6 +481,11 @@ static int sfs_path_command(uint8_t cmd, const char *rel)
     if (!g_connected) {
         return -1;
     }
+    /* sfs_put_str clamps at FTX_MAX_FILENAME-1; a longer path would be
+     * silently truncated and the command aimed at some other remote path. */
+    if (str_len(rel) >= FTX_MAX_FILENAME) {
+        return -1;
+    }
     g_sfs_buf[0] = cmd;
     len = sfs_put_str(1, rel);
     if (pkt_send(&g_pkt, g_sfs_buf, len) < 0) {
@@ -464,6 +509,11 @@ int serialfs_rename(const char *old_rel, const char *new_rel)
     uint16_t len;
 
     if (!g_connected) {
+        return -1;
+    }
+    /* Same truncation guard as sfs_path_command, for both names. */
+    if (str_len(old_rel) >= FTX_MAX_FILENAME ||
+        str_len(new_rel) >= FTX_MAX_FILENAME) {
         return -1;
     }
     g_sfs_buf[0] = SFS_CMD_RENAME;
@@ -574,6 +624,14 @@ static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
         return -1;
     }
 
+    /* Longer remote paths do not fit the LIST/START packets and would be
+     * silently truncated to some other path (see serialfs_get_file). */
+    if (str_len(remote_rel) >= FTX_MAX_FILENAME) {
+        ui_error("Remote path too long");
+        kbd_wait();
+        return -1;
+    }
+
     /* Create the local destination directory. */
     if (dos_mkdir(local_path) != 0 && !dos_exists(local_path)) {
         ui_error("Cannot create directory");
@@ -606,9 +664,14 @@ static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
         attr = g_walk[i].attr;
 
         str_copy(rchild, remote_rel);
-        path_append(rchild, name);
         str_copy(lchild, local_path);
-        path_append(lchild, name);
+        if (!path_join(rchild, name, MAX_FULL_PATH) ||
+            !path_join(lchild, name, MAX_FULL_PATH)) {
+            ui_error("Path too long");
+            kbd_wait();
+            result = -1;
+            continue;               /* loop condition ends the walk */
+        }
 
         if (attr & DOS_ATTR_DIRECTORY) {
             if (sfs_get_tree_r(rchild, lchild) != 0) {
@@ -648,12 +711,25 @@ static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
         return -1;
     }
 
+    /* Uploads carry the path-qualified name in the START packet, which holds
+     * FTX_MAX_FILENAME-1 chars; child names below need room on top of this,
+     * but refusing here (rather than at each child) gives one clear error. */
+    if (str_len(remote_rel) >= FTX_MAX_FILENAME) {
+        ui_error("Remote path too long");
+        kbd_wait();
+        return -1;
+    }
+
     /* Create the remote directory. Best effort: it may already exist, and file
        uploads auto-create parents server-side; this also covers empty dirs. */
     serialfs_mkdir(remote_rel);
 
     str_copy(pattern, local_path);
-    path_append(pattern, "*.*");
+    if (!path_join(pattern, "*.*", MAX_FULL_PATH)) {
+        ui_error("Path too long");
+        kbd_wait();
+        return -1;
+    }
 
     g_tree_depth++;
     old_dta = dos_get_dta();
@@ -668,9 +744,14 @@ static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
             }
 
             str_copy(src_child, local_path);
-            path_append(src_child, dta.name);
             str_copy(rchild, remote_rel);
-            path_append(rchild, dta.name);
+            if (!path_join(src_child, dta.name, MAX_FULL_PATH) ||
+                !path_join(rchild, dta.name, MAX_FULL_PATH)) {
+                ui_error("Path too long");
+                kbd_wait();
+                result = -1;
+                break;
+            }
 
             if (dta.attr & DOS_ATTR_DIRECTORY) {
                 result = sfs_put_tree_r(src_child, rchild);
@@ -706,6 +787,14 @@ static int sfs_delete_tree_r(const char *remote_rel)
         return -1;
     }
 
+    /* Same truncation guard as sfs_get_tree_r: a too-long path would list -
+     * and then delete - some other remote path. */
+    if (str_len(remote_rel) >= FTX_MAX_FILENAME) {
+        ui_error("Remote path too long");
+        kbd_wait();
+        return -1;
+    }
+
     base = g_walk_used;
     if (ftx_list_dir(&g_ftx, remote_rel, sfs_walk_cb, &overflow) < 0) {
         ui_error("Serial server not responding");
@@ -730,7 +819,12 @@ static int sfs_delete_tree_r(const char *remote_rel)
         attr = g_walk[i].attr;
 
         str_copy(rchild, remote_rel);
-        path_append(rchild, name);
+        if (!path_join(rchild, name, MAX_FULL_PATH)) {
+            ui_error("Path too long");
+            kbd_wait();
+            result = -1;
+            continue;               /* loop condition ends the walk */
+        }
 
         ui_show_progress("Deleting", name, 0, 1);
         if (attr & DOS_ATTR_DIRECTORY) {

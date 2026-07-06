@@ -145,6 +145,7 @@ int fops_copy_file(const char *src, const char *dst)
     int16_t bytes_read, bytes_written;
     int16_t src_attr;
     uint16_t src_date = 0, src_time = 0;
+    bool_t overwrite = FALSE;
     int result = FOPS_OK;
 
     /* Ensure the copy buffer is allocated (no-op if a batch already holds it). */
@@ -174,10 +175,7 @@ int fops_copy_file(const char *src, const char *dst)
                 return FOPS_CANCEL;
             }
         }
-        /* Delete existing file (also clears a read-only attribute) */
-        if (fops_delete_file(dst) != FOPS_OK) {
-            return FOPS_ERROR;
-        }
+        overwrite = TRUE;
     }
 
     src_attr = dos_get_attr(src);
@@ -193,6 +191,14 @@ int fops_copy_file(const char *src, const char *dst)
     /* Source timestamp, preserved on the copy */
     if (dos_get_ftime(src_h, &src_date, &src_time) != 0) {
         src_date = 0;
+    }
+
+    /* Delete the existing destination only now that the source is open, so a
+       failed source open can't destroy the destination with nothing to replace
+       it. The delete also clears a read-only attribute dos_create trips on. */
+    if (overwrite && fops_delete_file(dst) != FOPS_OK) {
+        dos_close(src_h);
+        return FOPS_ERROR;
     }
 
     /* Create destination file */
@@ -262,6 +268,7 @@ int fops_copy_dir(const char *src, const char *dst)
     char dst_path[MAX_FULL_PATH];
     DTA dta;
     DTA __far *old_dta;
+    bool_t failed = FALSE;
     int result = FOPS_OK;
 
     /* Copying a directory into itself would recurse endlessly: the new
@@ -290,7 +297,11 @@ int fops_copy_dir(const char *src, const char *dst)
 
     /* Build search pattern */
     str_copy(src_path, src);
-    path_append(src_path, "*.*");
+    if (!path_join(src_path, "*.*", MAX_FULL_PATH)) {
+        ui_error("Path too long");
+        kbd_wait();
+        return FOPS_ERROR;
+    }
 
     /* Save and set DTA */
     g_dir_depth++;
@@ -300,6 +311,8 @@ int fops_copy_dir(const char *src, const char *dst)
     /* Find first file */
     if (dos_find_first(src_path, 0x37) == 0) {
         do {
+            int rc;
+
             /* Skip . and .. */
             if (dta.name[0] == '.') {
                 if (dta.name[1] == '\0' ||
@@ -310,36 +323,48 @@ int fops_copy_dir(const char *src, const char *dst)
 
             /* Build full paths */
             str_copy(src_path, src);
-            path_append(src_path, dta.name);
             str_copy(dst_path, dst);
-            path_append(dst_path, dta.name);
+            if (!path_join(src_path, dta.name, MAX_FULL_PATH) ||
+                !path_join(dst_path, dta.name, MAX_FULL_PATH)) {
+                ui_error("Path too long");
+                kbd_wait();
+                result = FOPS_ERROR;
+                break;
+            }
 
             /* Show the nested name against the top-level counters */
             ui_show_progress("Copying", dta.name, g_file_current, g_file_count);
 
             if (dta.attr & DOS_ATTR_DIRECTORY) {
                 /* Recurse into subdirectory */
-                result = fops_copy_dir(src_path, dst_path);
+                rc = fops_copy_dir(src_path, dst_path);
             } else {
                 /* Copy file */
-                result = fops_copy_file(src_path, dst_path);
+                rc = fops_copy_file(src_path, dst_path);
             }
 
-            if (result == FOPS_CANCEL) {
+            if (rc == FOPS_CANCEL) {
+                result = FOPS_CANCEL;
                 break;
             }
-            /* Continue on SKIP or ERROR for single files */
-            if (result == FOPS_SKIP) {
-                result = FOPS_OK;
+            /* Keep copying the remaining entries on a per-file error or a
+               user skip, but remember it: the tree is only complete if every
+               file made it, and a move must never delete a source whose copy
+               failed or was skipped. */
+            if (rc != FOPS_OK) {
+                failed = TRUE;
             }
 
-        } while (dos_find_next() == 0 && result != FOPS_CANCEL);
+        } while (dos_find_next() == 0);
     }
 
     /* Restore DTA */
     dos_set_dta(old_dta);
     g_dir_depth--;
 
+    if (result == FOPS_OK && failed) {
+        result = FOPS_ERROR;
+    }
     return result;
 }
 
@@ -371,6 +396,7 @@ int fops_delete_dir(const char *path)
     char full_path[MAX_FULL_PATH];
     DTA dta;
     DTA __far *old_dta;
+    bool_t failed = FALSE;
     int result = FOPS_OK;
 
     /* Guard the stack against runaway recursion */
@@ -382,7 +408,11 @@ int fops_delete_dir(const char *path)
 
     /* Build search pattern */
     str_copy(full_path, path);
-    path_append(full_path, "*.*");
+    if (!path_join(full_path, "*.*", MAX_FULL_PATH)) {
+        ui_error("Path too long");
+        kbd_wait();
+        return FOPS_ERROR;
+    }
 
     /* Save and set DTA */
     g_dir_depth++;
@@ -392,6 +422,8 @@ int fops_delete_dir(const char *path)
     /* Find first file */
     if (dos_find_first(full_path, 0x37) == 0) {
         do {
+            int rc;
+
             /* Skip . and .. */
             if (dta.name[0] == '.') {
                 if (dta.name[1] == '\0' ||
@@ -402,21 +434,32 @@ int fops_delete_dir(const char *path)
 
             /* Build full path */
             str_copy(full_path, path);
-            path_append(full_path, dta.name);
+            if (!path_join(full_path, dta.name, MAX_FULL_PATH)) {
+                ui_error("Path too long");
+                kbd_wait();
+                result = FOPS_ERROR;
+                break;
+            }
 
             /* Show the nested name against the top-level counters */
             ui_show_progress("Deleting", dta.name, g_file_current, g_file_count);
 
             if (dta.attr & DOS_ATTR_DIRECTORY) {
                 /* Recurse into subdirectory */
-                result = fops_delete_dir(full_path);
+                rc = fops_delete_dir(full_path);
             } else {
                 /* Delete file */
-                result = fops_delete_file(full_path);
+                rc = fops_delete_file(full_path);
             }
 
-            if (result == FOPS_CANCEL) {
+            if (rc == FOPS_CANCEL) {
+                result = FOPS_CANCEL;
                 break;
+            }
+            /* Keep deleting the rest, but remember the failure - the final
+               rmdir below is skipped, since the directory is not empty. */
+            if (rc != FOPS_OK) {
+                failed = TRUE;
             }
 
             /* Check for user cancel (ESC) */
@@ -428,12 +471,16 @@ int fops_delete_dir(const char *path)
                 }
             }
 
-        } while (dos_find_next() == 0 && result != FOPS_CANCEL);
+        } while (dos_find_next() == 0);
     }
 
     /* Restore DTA */
     dos_set_dta(old_dta);
     g_dir_depth--;
+
+    if (result == FOPS_OK && failed) {
+        result = FOPS_ERROR;
+    }
 
     /* Remove the now-empty directory */
     if (result == FOPS_OK) {
@@ -491,6 +538,7 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
     selected = count_selected_files(src);
     g_file_count = (selected > 0) ? selected : 1;
     g_file_current = 0;
+    g_overwrite_all = 0;
 
     for (i = 0; i < src->files.count; i++) {
         int rc;
@@ -517,6 +565,21 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
                 rc = serialfs_get_tree(remote, local);
                 if (rc == 0 && move) serialfs_delete_tree(remote);
             } else {
+                /* Ask before clobbering an existing local file, matching the
+                   local copy path. (Uploads and tree merges still overwrite
+                   silently - the server side can't be probed cheaply.) */
+                if (dos_exists(local) && !g_overwrite_all) {
+                    int ow = dlg_overwrite(path_basename(local));
+                    if (ow == DLG_NO) {
+                        if (selected == 0) break;
+                        continue;
+                    } else if (ow == 'A') {
+                        g_overwrite_all = 1;
+                    } else if (ow != DLG_YES) {
+                        result = FOPS_CANCEL;
+                        break;
+                    }
+                }
                 rc = serialfs_get_file(remote, local);
                 if (rc == 0 && move) serialfs_delete(remote);
             }

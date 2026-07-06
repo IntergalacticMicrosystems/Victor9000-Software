@@ -20,7 +20,13 @@ Wire protocol (per request, all carried as reliable DATA packets):
         direction VICTOR_TO_PC -> Victor is pushing a file: we RECEIVE & store.
             A bare-basename filename lands in the last-LISTed dir (cwd); a
             path-qualified filename (contains a separator) is stored under root,
-            which is how igc copies whole directory trees.
+            which is how igc copies whole directory trees. The final component
+            is reverse-mapped through the directory's 8.3 map, so writing to
+            MYDOCU~1.TXT updates 'My Documents.txt' rather than forking a new
+            literal-8.3 file. The store is atomic (temp file + rename after the
+            CRC check), and after the client's END we reply CMD_OK on success
+            or ERROR on failure - igc waits for this, so igc and igcfs must be
+            updated together.
         direction PC_TO_VICTOR  -> Victor is pulling a file: we SEND it.
   - DELETE (0x1A) / MKDIR (0x1B) / RENAME (0x1C): filesystem op, reply OK/ERROR.
   - QUIT   (0x1F): stop serving.
@@ -139,7 +145,12 @@ def _short_name(real_name, is_dir):
 
 
 def build_dos_map(dirpath):
-    """Return {DOSNAME: real_name} for dirpath, deterministic & collision-free."""
+    """Return {DOSNAME: real_name} for dirpath, deterministic & collision-free.
+
+    Caveat: the ~N collision numbering is derived from the directory's sorted
+    real names at call time. If files are added or removed server-side between
+    igc's LIST and a later operation, a mangled name can remap to a different
+    real file. Don't reshuffle a served directory mid-session."""
     try:
         names = sorted(os.listdir(dirpath))
     except OSError:
@@ -400,14 +411,20 @@ class IgcFileServer:
                 rel = name.replace('\\', '/').strip('/')
                 parent_rel, base = (rel.rsplit('/', 1) if '/' in rel else ('', rel))
                 dest_dir = self._resolve(parent_rel)
-                dest = dest_dir / base
             else:
                 dest_dir = self._resolve(self.cwd)
-                dest = dest_dir / name
-            if self.root not in dest.resolve().parents and dest.resolve() != self.root:
-                # dest must be strictly inside root
-                if self.root not in dest.parents:
-                    raise PermissionError("path escapes root")
+                base = name
+            # Reverse-map the final 8.3 component like the download path does,
+            # so writing to MYDOCU~1.TXT updates 'My Documents.txt' instead of
+            # creating a second, literally-named file beside it. A name with no
+            # mapping passes through (a genuinely new file).
+            base = build_dos_map(dest_dir).get(base.upper(), base)
+            dest = dest_dir / base
+            # dest_dir is sandbox-checked by _resolve, but the final component
+            # may be a symlink pointing outside the root - resolve and re-check.
+            resolved = dest.resolve()
+            if resolved != self.root and self.root not in resolved.parents:
+                raise PermissionError("path escapes root")
         except Exception as e:
             log(f"  -> putfile rejected: {e}")
             self.pkt.send_packet(ReadyPacket(status=1).pack())
@@ -417,13 +434,30 @@ class IgcFileServer:
 
     def _recv_after_start(self, start, dest_path):
         """Receive a file whose START we've already consumed. Ported from
-        FileTransfer.receive_file (which reads the START itself)."""
+        FileTransfer.receive_file (which reads the START itself).
+
+        The data lands in a temp file that replaces dest_path only after the
+        whole-file CRC checks out, so a failed transfer can never destroy an
+        existing file. Every exit reports its outcome: pre-transfer failures
+        via the READY status, everything after via the post-END CMD_OK/ERROR
+        reply that igc's serialfs_put_named waits for."""
         dest_path = Path(dest_path)
+        tmp_path = dest_path.with_name(dest_path.name + '.igctmp')
         t0 = time.time()
-        self.pkt.send_packet(ReadyPacket(status=0).pack())  # READY
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Anything that fails before the data flows is a READY(status=1)
+        # rejection, which the client already understands.
         try:
-            with open(dest_path, 'wb') as f:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            f = open(tmp_path, 'wb')
+        except Exception as e:
+            log(f"  -> putfile rejected: {e}")
+            self.pkt.send_packet(ReadyPacket(status=1).pack())
+            return
+        self.pkt.send_packet(ReadyPacket(status=0).pack())  # READY
+
+        try:
+            with f:
                 expected = 0
                 while True:
                     pkt = self._parse(self.ft._recv_packet())
@@ -440,19 +474,22 @@ class IgcFileServer:
                             if start.compression == Compression.RLE else pkt.data)
                     f.write(data)
                     expected += 1
-        except Exception:
-            if dest_path.exists():
-                dest_path.unlink()
-            raise
-        # Verify whole-file CRC-32 and apply the original timestamp.
-        if crc32_file(str(dest_path)) != start.file_crc:
-            dest_path.unlink()
-            log("  -> putfile CRC mismatch")
+            # Verify the whole-file CRC-32, stamp the original timestamp, and
+            # only then move the temp into place.
+            if crc32_file(str(tmp_path)) != start.file_crc:
+                raise IOError("CRC mismatch")
+            mtime = FileTransfer._dos_to_unix_datetime(start.file_date, start.file_time)
+            if mtime:
+                os.utime(tmp_path, (mtime, mtime))
+            os.replace(tmp_path, dest_path)
+        except Exception as e:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            log(f"  -> putfile failed: {e}")
+            self._reply_error(Error.FILE, str(e)[:60])
             return
-        mtime = FileTransfer._dos_to_unix_datetime(start.file_date, start.file_time)
-        if mtime:
-            os.utime(dest_path, (mtime, mtime))
         nbytes = dest_path.stat().st_size
+        self._reply_ok()
         log(f"  -> received {nbytes} bytes{_rate(nbytes, time.time() - t0)}")
 
     @staticmethod

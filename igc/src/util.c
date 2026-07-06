@@ -160,6 +160,36 @@ void path_append(char *path, const char *component)
 }
 
 /*---------------------------------------------------------------------------
+ * path_join - Bounded path_append
+ *
+ * Appends "\component" only if the result (with its null) fits in bufsize
+ * bytes; returns FALSE and leaves path untouched on overflow. The recursive
+ * tree walkers depend on this: remote directory trees can be deeper than any
+ * DOS path, and an unbounded append would run off their stack buffers.
+ *---------------------------------------------------------------------------*/
+bool_t path_join(char *path, const char *component, uint16_t bufsize)
+{
+    uint16_t len = str_len(path);
+    uint16_t need = len + str_len(component) + 1;   /* +1 for the null */
+
+    if (len > 0 && path[len - 1] != '\\') {
+        need++;                                     /* separator */
+    }
+    if (need > bufsize) {
+        return FALSE;
+    }
+
+    if (len > 0 && path[len - 1] != '\\') {
+        path[len++] = '\\';
+    }
+    while (*component) {
+        path[len++] = *component++;
+    }
+    path[len] = '\0';
+    return TRUE;
+}
+
+/*---------------------------------------------------------------------------
  * path_get_parent - Get parent directory (modifies in-place)
  *---------------------------------------------------------------------------*/
 void path_get_parent(char *path)

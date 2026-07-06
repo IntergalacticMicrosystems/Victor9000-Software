@@ -87,6 +87,18 @@ copy in/out, delete, mkdir, rename. Directories copy recursively (single or
 nested) in either direction: igc walks the tree and pushes/pulls each file. An
 upload whose name carries a path separator is stored under that subdirectory
 (parents auto-created); a bare name still lands in the last-listed directory.
+The final name component is reverse-mapped through the 8.3 map, so writing to
+`MYDOCU~1.TXT` updates *My Documents.txt* rather than creating a second file.
+
+Uploads are stored atomically (temp file + rename after a whole-file CRC
+check) and acknowledged to igc after the transfer — a failed store can't
+destroy an existing file and is reported instead of silently vanishing.
+Because igc waits for that acknowledgement, **igc and igcfs must be updated
+together**: a new igc against an old igcfs reports every upload as failed.
+
+The ~N mangle numbering is recomputed from the directory's sorted contents on
+each request, so avoid adding/removing files in a served directory from the PC
+side mid-session — a mangled name could remap to a different file.
 
 ## Self-test (no Victor required)
 

@@ -17,4 +17,10 @@
 #define SFS_CMD_OK      0x1D   /* reply:   [cmd][status]   (status 0 = ok)    */
 /* Failures are reported with the stock FTX_CMD_ERROR (0x17) packet.          */
 
+/* Uploads (START direction VICTOR_TO_PC) additionally get a reply after the
+ * client's END: SFS_CMD_OK once the server has CRC-verified and atomically
+ * stored the file, or FTX_CMD_ERROR if the store failed. Both sides must be
+ * updated together - an igc newer than igcfs times out waiting for this
+ * reply and reports every upload as failed. */
+
 #endif /* SERIALFS_PROTO_H */

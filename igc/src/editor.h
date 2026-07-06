@@ -66,7 +66,8 @@ void editor_shutdown(void);
 /* View file (F3) - read-only mode */
 void editor_view(const char *filename);
 
-/* Edit file (F4) - full edit mode */
-void editor_edit(const char *filename);
+/* Edit file (F4) - full edit mode.
+ * Returns TRUE if the file was saved (F2) at least once. */
+bool_t editor_edit(const char *filename);
 
 #endif /* EDITOR_H */

@@ -68,7 +68,15 @@ directories too — a selected folder is copied recursively (single or nested) i
 either direction. The path is shown as `SER:\...`. Remote files are presented as
 uppercase 8.3 names (long/mixed-case names are mangled to `NAME~1.EXT`).
 
+Copying a file from the server over an existing local file asks before
+overwriting (Yes/No/All), like a local copy. Uploads and recursive directory
+copies overwrite silently — the server side cannot be probed per file.
+
 The link runs **8N1 at 38400 baud over a 3-wire cable (no hardware flow control)**.
+
+> **Version pairing:** igc waits for the server to confirm each upload after
+> the transfer completes, so `igc.exe` and `igcfs` must be updated together —
+> a new igc against an old igcfs reports every upload as failed.
 
 ### On the PC (server)
 
@@ -111,7 +119,7 @@ make clean      # Remove build artifacts
 make deploy     # Deploy to MAME disk image
 ```
 
-Output: `bin/igc.exe` (~30KB)
+Output: `bin/igc.exe` (~50KB)
 
 ## System Requirements
 

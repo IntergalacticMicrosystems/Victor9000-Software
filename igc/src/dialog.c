@@ -393,8 +393,9 @@ int dlg_drive_select(uint8_t current_drive)
     uint8_t selected = 0;
     KeyEvent key;
 
-    /* Find valid drives */
-    for (i = 0; i < 26; i++) {
+    /* Find valid drives. The window at y=8 fits 13 rows on a 25-line screen;
+       cap the real drives at 12 so the serial entry below always fits. */
+    for (i = 0; i < 26 && drive_count < 12; i++) {
         if (dos_is_drive_valid(i)) {
             if (i == current_drive) {
                 selected = drive_count;
@@ -406,15 +407,6 @@ int dlg_drive_select(uint8_t current_drive)
     /* Offer the serial file server (COM1) as a final pseudo-entry. */
     drives[drive_count++] = SFS_DRIVE_SENTINEL;
 
-    if (drive_count == 0) {
-        return -1;
-    }
-
-    /* The window at y=8 fits 13 rows on a 25-line screen; entries past
-       that would be invisible but still selectable via Down/End */
-    if (drive_count > 13) {
-        drive_count = 13;
-    }
     if (selected >= drive_count) {
         selected = 0;
     }

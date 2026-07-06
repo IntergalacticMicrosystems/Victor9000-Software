@@ -76,7 +76,8 @@ def igc_list(pkt, path=''):
 
 
 def igc_upload(pkt, data, remote_basename):
-    """Emulate ftx_send_file: START(VICTOR_TO_PC) -> READY -> DATA... -> END."""
+    """Emulate igc's serialfs_put_named: START(VICTOR_TO_PC) -> READY ->
+    DATA... -> END -> wait for the server's CMD_OK/ERROR store status."""
     file_crc = crc32(data)
     total = max(1, (len(data) + CHUNK_SIZE - 1) // CHUNK_SIZE)
     date, tm = FileTransfer._unix_to_dos_datetime(0)
@@ -91,6 +92,8 @@ def igc_upload(pkt, data, remote_basename):
         pkt.send_packet(DataPacket(chunk_num=i, data=chunk).pack(), timeout=5)
     pkt.send_packet(EndPacket(total_chunks=total, bytes_sent=len(data),
                               file_crc=file_crc, status=Status.OK).pack())
+    reply = pkt.receive_packet(timeout=5)
+    assert reply[0] == CMD_OK and reply[1] == 0, "upload not acknowledged"
 
 
 def igc_download(pkt, relpath):
@@ -189,6 +192,17 @@ def main():
         big = igc_download(pkt, mangled[0])
         check("download multi-chunk mangled file", big == (bytes(range(256)) * 20))
 
+        # --- upload over an existing long-named file: the final component is
+        #     reverse-mapped, so the write updates the original rather than
+        #     forking a literal MYDOCU~1-style file next to it ---
+        igc_list(pkt, '')
+        updated = b'updated content!' * 8
+        igc_upload(pkt, updated, mangled[0])
+        check("upload over mangled name updates real file",
+              (rootp / 'a-long-name.dat').read_bytes() == updated)
+        check("upload over mangled name does not fork a new file",
+              not (rootp / mangled[0]).exists())
+
         # --- upload (Victor pushes) into root (cwd from last list of root) ---
         igc_list(pkt, '')  # set server cwd back to root
         payload = b'X' * 3000  # spans 3 chunks
@@ -218,6 +232,25 @@ def main():
         pkt.send_packet(req.pack())
         reply = pkt.receive_packet(timeout=5)
         check("download missing file -> ERROR", reply[0] == Command.ERROR)
+
+        # --- a failed upload (bad CRC) must report ERROR and must not
+        #     destroy the existing destination (temp-file + atomic rename) ---
+        igc_list(pkt, '')
+        bad = StartPacket(direction=Direction.VICTOR_TO_PC, file_size=5,
+                          file_crc=0xDEADBEEF, file_date=0, file_time=0,
+                          file_attr=0x20, filename='HELLO.TXT')
+        pkt.send_packet(bad.pack())
+        ready = parse_packet(pkt.receive_packet(timeout=5))
+        assert isinstance(ready, ReadyPacket) and ready.status == 0, "no READY"
+        pkt.send_packet(DataPacket(chunk_num=0, data=b'wrong').pack(), timeout=5)
+        pkt.send_packet(EndPacket(total_chunks=1, bytes_sent=5,
+                                  file_crc=0xDEADBEEF, status=Status.OK).pack())
+        reply = pkt.receive_packet(timeout=5)
+        check("failed upload -> ERROR", reply[0] == Command.ERROR)
+        check("failed upload leaves original intact",
+              (rootp / 'HELLO.TXT').read_bytes() == b'hello victor\r\n')
+        check("failed upload leaves no temp file",
+              not list(rootp.glob('*.igctmp')))
 
         # --- sandbox escape rejected ---
         ok, _ = igc_simple(pkt, bytes([CMD_DELETE]) + _p('..\\..\\etc\\passwd'))

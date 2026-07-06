@@ -25,6 +25,11 @@ static char __far *g_cut_buffer = (char __far *)0;
 static uint16_t g_cut_len = 0;
 static bool_t g_last_was_cut = FALSE;  /* Track consecutive cuts */
 
+/* TRUE once F2 has saved the file in this editing session; editor_edit
+ * returns it so callers (the serial view/edit flow) know whether the file
+ * on disk actually changed. */
+static bool_t g_saved_any = FALSE;
+
 /*---------------------------------------------------------------------------
  * editor_init - Initialize editor module
  *---------------------------------------------------------------------------*/
@@ -724,25 +729,29 @@ static void cut_line(void)
     if (g_cut_buffer == (char __far *)0) {
         g_cut_buffer = (char __far *)mem_alloc(CUT_BUF_SIZE);
         g_cut_len = 0;
-    }
-
-    /* Calculate how much we can copy (don't overflow cut buffer).
-       Compare via the remaining space - the sum can wrap at 16 bits.
-       With no cut buffer the line is still deleted, just not saved. */
-    if (g_cut_buffer != (char __far *)0) {
-        uint16_t space = CUT_BUF_SIZE - 1 - g_cut_len;
-        copy_len = (len > space) ? space : len;
-    } else {
-        copy_len = 0;
-    }
-
-    if (copy_len > 0) {
-        /* Append line to cut buffer (including newline if present) */
-        for (i = 0; i < copy_len; i++) {
-            g_cut_buffer[g_cut_len + i] = g_editor.buffer[start + i];
+        if (g_cut_buffer == (char __far *)0) {
+            ui_error("No memory for cut buffer");
+            return;
         }
-        g_cut_len += copy_len;
     }
+
+    /* Refuse a cut that doesn't fit rather than clip it: silently dropping
+       the overflow would delete text that can never be pasted back.
+       Compare via the remaining space - the sum can wrap at 16 bits. */
+    {
+        uint16_t space = CUT_BUF_SIZE - 1 - g_cut_len;
+        if (len > space) {
+            ui_error("Cut buffer full");
+            return;
+        }
+    }
+    copy_len = len;
+
+    /* Append line to cut buffer (including newline if present) */
+    for (i = 0; i < copy_len; i++) {
+        g_cut_buffer[g_cut_len + i] = g_editor.buffer[start + i];
+    }
+    g_cut_len += copy_len;
 
     /* Delete line from buffer */
     for (i = start; i < g_editor.buf_used - len; i++) {
@@ -901,6 +910,7 @@ static void editor_run(void)
                         bool_t saved = save_file();
                         draw_screen();
                         if (saved) {
+                            g_saved_any = TRUE;
                             ui_status("File saved");
                         } else {
                             ui_error("Save failed - disk full?");
@@ -953,12 +963,13 @@ void editor_view(const char *filename)
 
 /*---------------------------------------------------------------------------
  * editor_edit - Edit file (F4)
+ * Returns TRUE if the file was saved (F2) at least once.
  *---------------------------------------------------------------------------*/
-void editor_edit(const char *filename)
+bool_t editor_edit(const char *filename)
 {
     if (!editor_acquire()) {
         dlg_alert("Edit", "Not enough memory");
-        return;
+        return FALSE;
     }
 
     /* Save screen */
@@ -966,6 +977,7 @@ void editor_edit(const char *filename)
     scr_clear();
 
     g_editor.readonly = FALSE;
+    g_saved_any = FALSE;
 
     if (load_file(filename)) {
         if (g_editor.truncated) {
@@ -993,4 +1005,6 @@ void editor_edit(const char *filename)
     /* Restore screen */
     scr_restore_rect(0, 0, 80, 25, g_screen_save);
     editor_release();
+
+    return g_saved_any;
 }

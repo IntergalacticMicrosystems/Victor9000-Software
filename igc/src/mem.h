@@ -15,7 +15,6 @@ typedef struct {
     uint32_t total_kb;          /* Total available KB at startup */
     uint8_t  tier;              /* MEM_TINY, MEM_LOW, MEM_MEDIUM, or MEM_HIGH */
     uint16_t files_per_panel;   /* Max files based on tier */
-    uint32_t editor_buf_size;   /* Editor buffer size based on tier */
     uint16_t copy_buf_size;     /* Copy buffer size based on tier */
     uint16_t xfer_buf_size;     /* Serial transfer buffer size based on tier */
 } MemState;
@@ -59,9 +58,6 @@ void mem_free(void __far *ptr);
 
 /* Get max files per panel for current tier */
 uint16_t mem_get_files_per_panel(void);
-
-/* Get editor buffer size for current tier */
-uint32_t mem_get_editor_buf_size(void);
 
 /* Get copy buffer size for current tier */
 uint16_t mem_get_copy_buf_size(void);

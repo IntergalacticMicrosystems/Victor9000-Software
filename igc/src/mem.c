@@ -47,29 +47,26 @@ void mem_init(void)
     /* Get available memory */
     g_mem.total_kb = mem_get_available_kb();
 
-    /* Determine tier based on available memory */
+    /* Determine tier based on available memory. (The editor sizes its own
+     * buffers from the tier - see EDIT_BUF_* in editor.h.) */
     if (g_mem.total_kb >= MEM_HIGH_THRESHOLD) {
         g_mem.tier = MEM_HIGH;
         g_mem.files_per_panel = FILES_PER_PANEL_HIGH;
-        g_mem.editor_buf_size = EDITOR_BUF_HIGH;
         g_mem.copy_buf_size = COPY_BUF_HIGH;
         g_mem.xfer_buf_size = XFER_BUF_HIGH;
     } else if (g_mem.total_kb >= MEM_MEDIUM_THRESHOLD) {
         g_mem.tier = MEM_MEDIUM;
         g_mem.files_per_panel = FILES_PER_PANEL_MEDIUM;
-        g_mem.editor_buf_size = EDITOR_BUF_MEDIUM;
         g_mem.copy_buf_size = COPY_BUF_MEDIUM;
         g_mem.xfer_buf_size = XFER_BUF_MEDIUM;
     } else if (g_mem.total_kb >= MEM_LOW_THRESHOLD) {
         g_mem.tier = MEM_LOW;
         g_mem.files_per_panel = FILES_PER_PANEL_LOW;
-        g_mem.editor_buf_size = EDITOR_BUF_LOW;
         g_mem.copy_buf_size = COPY_BUF_LOW;
         g_mem.xfer_buf_size = XFER_BUF_LOW;
     } else {
         g_mem.tier = MEM_TINY;
         g_mem.files_per_panel = FILES_PER_PANEL_TINY;
-        g_mem.editor_buf_size = EDITOR_BUF_TINY;
         g_mem.copy_buf_size = COPY_BUF_TINY;
         g_mem.xfer_buf_size = XFER_BUF_TINY;
     }
@@ -152,11 +149,6 @@ void mem_free(void __far *ptr)
 uint16_t mem_get_files_per_panel(void)
 {
     return g_mem.files_per_panel;
-}
-
-uint32_t mem_get_editor_buf_size(void)
-{
-    return g_mem.editor_buf_size;
 }
 
 uint16_t mem_get_copy_buf_size(void)

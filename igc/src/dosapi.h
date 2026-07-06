@@ -10,21 +10,6 @@
 #include "igc.h"
 
 /*---------------------------------------------------------------------------
- * DOS Version
- *---------------------------------------------------------------------------*/
-
-/* Get DOS version - returns major version in low byte, minor in high byte */
-/* Example: DOS 2.11 returns 0x0B02 (major=2, minor=11) */
-uint16_t dos_get_version(void);
-
-/*---------------------------------------------------------------------------
- * Program Control
- *---------------------------------------------------------------------------*/
-
-/* Exit to DOS with return code */
-void dos_exit(uint8_t code);
-
-/*---------------------------------------------------------------------------
  * Drive Operations
  *---------------------------------------------------------------------------*/
 
@@ -47,10 +32,13 @@ uint32_t dos_get_valid_drives(void);
  * Critical Error Handler
  *---------------------------------------------------------------------------*/
 
-/* Install critical error handler to suppress "Abort, Retry, Fail?" prompts */
+/* Install critical error handler so DOS fails the call instead of prompting
+ * "Abort, Retry, Fail?" (DOS 3+ only; no-op on 2.x). Idempotent. main()
+ * installs it for the whole run. */
 void dos_install_crit_handler(void);
 
-/* Restore original critical error handler */
+/* Restore original critical error handler (normal shutdown only - DOS also
+ * restores the vector from the PSP when the process terminates) */
 void dos_restore_crit_handler(void);
 
 /*---------------------------------------------------------------------------
@@ -147,15 +135,5 @@ int dos_set_attr(const char *path, uint8_t attr);
 /* Get free space on drive (in KB) */
 /* Returns 0 on error */
 uint32_t dos_get_free_space(uint8_t drive);
-
-/*---------------------------------------------------------------------------
- * Console Control
- *---------------------------------------------------------------------------*/
-
-/* Hide cursor via DOS */
-void dos_cursor_off(void);
-
-/* Show cursor via DOS */
-void dos_cursor_on(void);
 
 #endif /* DOSAPI_H */

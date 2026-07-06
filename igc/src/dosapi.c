@@ -68,33 +68,6 @@ void dos_restore_crit_handler(void)
 }
 
 /*---------------------------------------------------------------------------
- * dos_get_version - Get DOS version
- * Returns major version in low byte, minor in high byte
- *---------------------------------------------------------------------------*/
-uint16_t dos_get_version(void)
-{
-    union REGS regs;
-
-    regs.h.ah = 0x30;
-    int86(0x21, &regs, &regs);
-
-    /* AL = major version, AH = minor version */
-    return regs.x.ax;
-}
-
-/*---------------------------------------------------------------------------
- * dos_exit - Exit to DOS with return code
- *---------------------------------------------------------------------------*/
-void dos_exit(uint8_t code)
-{
-    union REGS regs;
-
-    regs.h.ah = 0x4C;
-    regs.h.al = code;
-    int86(0x21, &regs, &regs);
-}
-
-/*---------------------------------------------------------------------------
  * dos_get_drive - Get current drive
  *---------------------------------------------------------------------------*/
 uint8_t dos_get_drive(void)
@@ -121,7 +94,9 @@ void dos_set_drive(uint8_t drive)
 
 /*---------------------------------------------------------------------------
  * dos_is_drive_valid - Check if drive is valid (exists in system)
- * Uses critical error handler to suppress "Abort, Retry, Fail?" prompts
+ * The install below is an idempotent safety net: main() installs the
+ * critical-error handler for the whole run (and it stays installed - a
+ * restore here would tear the global handler down after the first probe).
  *---------------------------------------------------------------------------*/
 bool_t dos_is_drive_valid(uint8_t drive)
 {
@@ -129,7 +104,6 @@ bool_t dos_is_drive_valid(uint8_t drive)
     uint8_t old_drive;
     uint8_t new_drive;
 
-    /* Install critical error handler to suppress prompts */
     dos_install_crit_handler();
 
     /* Save current drive */
@@ -148,9 +122,6 @@ bool_t dos_is_drive_valid(uint8_t drive)
     regs.h.dl = old_drive;
     int86(0x21, &regs, &regs);
 
-    /* Restore original critical error handler */
-    dos_restore_crit_handler();
-
     /* Drive is valid if it was selected successfully */
     return (new_drive == drive) ? TRUE : FALSE;
 }
@@ -167,8 +138,8 @@ bool_t dos_is_drive_ready(uint8_t drive)
     struct SREGS sregs;
     char buf[68];
 
-    /* Install critical error handler to suppress prompts (DOS 3.x+ only)
-     * On DOS 2.x, user will see "Abort, Retry?" if drive not ready */
+    /* Idempotent safety net; the handler is installed for the whole run by
+     * main() (DOS 3.x+ only - on DOS 2.x the user still sees the prompt). */
     dos_install_crit_handler();
 
     /* Use get current directory for the drive - works on DOS 2.x and 3.x
@@ -179,9 +150,6 @@ bool_t dos_is_drive_ready(uint8_t drive)
     regs.x.si = FP_OFF(buf);
     sregs.ds = FP_SEG(buf);
     int86x(0x21, &regs, &regs, &sregs);
-
-    /* Restore original critical error handler */
-    dos_restore_crit_handler();
 
     /* CF set means error (drive not ready) */
     return regs.x.cflag ? FALSE : TRUE;
@@ -679,22 +647,4 @@ uint32_t dos_get_free_space(uint8_t drive)
 
     /* Return in KB */
     return free_bytes / 1024L;
-}
-
-/*---------------------------------------------------------------------------
- * dos_cursor_off - Hide cursor
- * Note: Victor 9000 doesn't support ANSI sequences - cursor control is
- * done via CRTC registers in screen.c (scr_cursor_off/on)
- *---------------------------------------------------------------------------*/
-void dos_cursor_off(void)
-{
-    /* Not implemented for V9K - use scr_cursor_off() instead */
-}
-
-/*---------------------------------------------------------------------------
- * dos_cursor_on - Show cursor
- *---------------------------------------------------------------------------*/
-void dos_cursor_on(void)
-{
-    /* Not implemented for V9K - use scr_cursor_on() instead */
 }

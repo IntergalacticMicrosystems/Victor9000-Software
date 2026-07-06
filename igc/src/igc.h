@@ -195,11 +195,9 @@ typedef uint8_t bool_t;
 #define FILES_PER_PANEL_MEDIUM  512
 #define FILES_PER_PANEL_HIGH    1024
 
-/* Editor buffer (bytes) */
-#define EDITOR_BUF_TINY         4096L       /* 4KB */
-#define EDITOR_BUF_LOW          16384L      /* 16KB */
-#define EDITOR_BUF_MEDIUM       32768L      /* 32KB */
-#define EDITOR_BUF_HIGH         65536L      /* 64KB */
+/* Editor buffer and line limits live in editor.h (EDIT_BUF_* / EDIT_LINES_*):
+ * the editor sizes its own buffers from the memory tier. Note EDIT_BUF_HIGH
+ * is 65535, not 64K - the line-offset table holds 16-bit offsets. */
 
 /* Copy buffer (bytes) */
 #define COPY_BUF_TINY           256
@@ -216,12 +214,6 @@ typedef uint8_t bool_t;
 #define XFER_BUF_LOW            8192U        /* 8 chunks */
 #define XFER_BUF_MEDIUM         16384U       /* 16 chunks */
 #define XFER_BUF_HIGH           24576U       /* 24 chunks (<= 32767 int16 limit) */
-
-/* Editor max lines */
-#define EDITOR_LINES_TINY       128
-#define EDITOR_LINES_LOW        512
-#define EDITOR_LINES_MEDIUM     1024
-#define EDITOR_LINES_HIGH       2048
 
 /*---------------------------------------------------------------------------
  * Path and Filename Limits

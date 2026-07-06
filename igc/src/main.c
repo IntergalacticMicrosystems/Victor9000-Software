@@ -133,16 +133,20 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
     ui_clear_status();
 
     if (edit) {
-        editor_edit(temp);
-        ui_status("Saving to server...");
-        if (serialfs_put_file(temp, remote) != 0) {
-            ui_clear_status();
-            ui_error("Cannot save to server");
-            kbd_wait();
-        } else {
-            ui_clear_status();
+        /* Upload only if the editor actually saved the temp file - sending an
+         * untouched or discarded buffer back would just re-transmit the same
+         * bytes at 38400 baud. */
+        if (editor_edit(temp)) {
+            ui_status("Saving to server...");
+            if (serialfs_put_file(temp, remote) != 0) {
+                ui_clear_status();
+                ui_error("Cannot save to server");
+                kbd_wait();
+            } else {
+                ui_clear_status();
+            }
+            panel_read_dir(p);
         }
-        panel_read_dir(p);
     } else {
         editor_view(temp);
     }
@@ -163,6 +167,16 @@ static void handle_fkey(uint8_t fkey_num)
             p = panel_get_active();
             drive = dlg_drive_select(p->drive);
             if (drive == DLG_DRIVE_SERIAL) {
+                /* One serial pane at a time: there is a single COM1 session,
+                 * and the server's upload directory tracks the last listing -
+                 * two serial panes would fight over both. */
+                if (panel_get_other()->backend == PANEL_SERIAL) {
+                    ui_error("Other panel is already on the serial server");
+                    kbd_wait();
+                    ui_clear_status();
+                    ui_draw_fkey_bar();
+                    break;
+                }
                 ui_status("Connecting to serial server...");
                 if (serialfs_connect(SERIALFS_PORT_A, SERIALFS_BAUD_DEFAULT)) {
                     ui_clear_status();
@@ -362,6 +376,13 @@ int main(int argc, char *argv[])
     /* Initialize memory system */
     mem_init();
 
+    /* Fail critical errors (INT 24h) for the whole run on DOS 3+. Without
+     * this, touching a not-ready drive (empty floppy restored from IGC.INI,
+     * disk ejected mid-copy) pops DOS's "Abort, Retry, Ignore, Fail?" over
+     * the direct-VRAM UI, and Abort kills IGC with the screen unrestored.
+     * With it, the DOS call returns an error our normal paths handle. */
+    dos_install_crit_handler();
+
     /* Point IGC.INI at the executable's directory (argv[0] is the full
      * program path on DOS 3.0+); falls back to the CWD otherwise. */
     config_init_path(argc > 0 ? argv[0] : (char *)0);
@@ -428,13 +449,15 @@ int main(int argc, char *argv[])
         config_save(&cfg);
     }
 
-    /* Cleanup */
+    /* Cleanup. The early-exit paths above skip the restore: DOS reloads the
+     * INT 24h vector from the PSP when the process terminates anyway. */
     editor_shutdown();
     fops_shutdown();
     panels_free();
     scr_clear();
     scr_cursor_on();
     scr_exit();
+    dos_restore_crit_handler();
     mem_shutdown();
 
     return 0;

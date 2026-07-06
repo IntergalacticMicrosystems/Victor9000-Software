@@ -84,9 +84,6 @@ Panel *panel_get_active(void);
 /* Get other (inactive) panel pointer */
 Panel *panel_get_other(void);
 
-/* Get inactive panel pointer (alias for panel_get_other) */
-Panel *panel_get_inactive(void);
-
 /* Switch active panel */
 void panel_switch(void);
 
@@ -100,9 +97,6 @@ int panel_read_dir(Panel *p);
 /* Sort a panel's file list (".." first, directories, then alphabetical).
  * Exposed so the serial backend can match the local panel's ordering. */
 void panel_sort(Panel *p);
-
-/* Refresh panel (re-read current directory) */
-int panel_refresh(Panel *p);
 
 /* Change to directory (updates path and reads) */
 int panel_change_dir(Panel *p, const char *dirname);

@@ -57,12 +57,6 @@ void ui_error(const char *msg);
 /* Clear status line */
 void ui_clear_status(void);
 
-/* Show "Loading..." message */
-void ui_show_loading(void);
-
-/* Hide "Loading..." message */
-void ui_hide_loading(void);
-
 /*---------------------------------------------------------------------------
  * Progress Display
  *---------------------------------------------------------------------------*/

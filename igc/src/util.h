@@ -46,6 +46,11 @@ void path_build(char *buf, uint8_t drive, const char *path, const char *filename
 /* Append component to path (adds backslash if needed) */
 void path_append(char *path, const char *component);
 
+/* Bounded path_append: appends only if the result (including the null) fits
+ * in bufsize bytes. Returns FALSE and leaves path unchanged on overflow.
+ * Use this whenever the component comes from disk or the serial link. */
+bool_t path_join(char *path, const char *component, uint16_t bufsize);
+
 /* Get parent directory (modifies path in-place) */
 void path_get_parent(char *path);
 

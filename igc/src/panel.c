@@ -180,14 +180,6 @@ Panel *panel_get_other(void)
 }
 
 /*---------------------------------------------------------------------------
- * panel_get_inactive - Get inactive panel pointer (alias)
- *---------------------------------------------------------------------------*/
-Panel *panel_get_inactive(void)
-{
-    return panel_get_other();
-}
-
-/*---------------------------------------------------------------------------
  * panel_switch - Switch active panel
  *---------------------------------------------------------------------------*/
 void panel_switch(void)
@@ -289,22 +281,6 @@ int panel_read_dir(Panel *p)
     ui_clear_status();
 
     return 0;
-}
-
-/*---------------------------------------------------------------------------
- * panel_refresh - Re-read current directory
- *---------------------------------------------------------------------------*/
-int panel_refresh(Panel *p)
-{
-    uint16_t old_cursor = p->cursor;
-    int result = panel_read_dir(p);
-
-    /* Try to restore cursor position */
-    if (old_cursor < p->files.count) {
-        p->cursor = old_cursor;
-    }
-
-    return result;
 }
 
 /*---------------------------------------------------------------------------
