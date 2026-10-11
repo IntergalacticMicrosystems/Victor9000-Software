@@ -23,6 +23,7 @@
 #include "packet.h"
 #include "filetrx.h"
 #include "ftx_crc32.h"
+#include "ftx_compress.h"
 #pragma pack(pop)
 
 #include "serialfs.h"
@@ -272,7 +273,7 @@ int serialfs_get_file(const char *remote_rel, const char *local_path)
     mem_set_far(&req, 0, sizeof(req));
     req.cmd = FTX_CMD_START;
     req.direction = FTX_DIR_PC_TO_VICTOR;   /* data flows PC -> Victor */
-    req.compression = FTX_COMP_NONE;
+    req.compression = FTX_COMP_RLE;         /* ask the server to RLE its chunks */
     n = 0;
     while (remote_rel[n] != '\0' && n < FTX_MAX_FILENAME - 1) {
         req.filename[n] = remote_rel[n];
@@ -349,7 +350,7 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
     mem_set_far(&start, 0, sizeof(start));
     start.cmd = FTX_CMD_START;
     start.direction = FTX_DIR_VICTOR_TO_PC;
-    start.compression = FTX_COMP_NONE;
+    start.compression = FTX_COMP_RLE;
     start.flags = FTX_FLAG_OVERWRITE;
     start.file_size = fsize;
     start.file_date = fdate;
@@ -378,9 +379,12 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
     /* DATA chunks. Read the file in big io-buffer blocks (fewer floppy reads),
      * then carve FTX_CHUNK_SIZE slices into the DATA packet built in pkt_buf.
      * io_bufsize is a multiple of FTX_CHUNK_SIZE, so only the file's final block
-     * yields a short last slice. The bar tick sits after pkt_send (which has
-     * already collected this chunk's ACK), so it draws in the lull before the
-     * next slice - no inbound bytes are in flight to be missed. */
+     * yields a short last slice. Each slice is RLE-compressed straight into the
+     * packet when that saves bytes, and the per-chunk flag (not the START mode)
+     * tells the server which chunks to expand - incompressible slices go raw.
+     * The bar tick sits after pkt_send (which has already collected this
+     * chunk's ACK), so it draws in the lull before the next slice - no inbound
+     * bytes are in flight to be missed. */
     dpkt = (ftx_data_t __far *)g_ftx.pkt_buf;
     chunk = 0;
     while (chunk < total) {
@@ -394,15 +398,23 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
         }
         for (off = 0; off < (uint16_t)blk; off += FTX_CHUNK_SIZE) {
             uint16_t slice = (uint16_t)blk - off;
+            uint32_t clen;
             if (slice > FTX_CHUNK_SIZE) {
                 slice = FTX_CHUNK_SIZE;
             }
+            clen = rle_compress(g_io_buf + off, slice, dpkt->data, FTX_CHUNK_SIZE);
             dpkt->cmd = FTX_CMD_DATA;
-            dpkt->flags = 0;
             dpkt->chunk_num = chunk;
-            dpkt->chunk_size = slice;
-            mem_copy_far(dpkt->data, g_io_buf + off, slice);
-            if (pkt_send(&g_pkt, g_ftx.pkt_buf, (uint16_t)(6 + slice)) < 0) {
+            if (clen > 0 && clen < slice) {
+                dpkt->flags = FTX_DATA_FLAG_COMPRESSED;
+                dpkt->chunk_size = (uint16_t)clen;
+            } else {
+                dpkt->flags = 0;
+                dpkt->chunk_size = slice;
+                mem_copy_far(dpkt->data, g_io_buf + off, slice);
+            }
+            if (pkt_send(&g_pkt, g_ftx.pkt_buf,
+                         (uint16_t)(6 + dpkt->chunk_size)) < 0) {
                 ftx_file_close(fh);
                 return -1;
             }

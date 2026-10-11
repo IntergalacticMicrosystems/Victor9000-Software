@@ -19,10 +19,11 @@ from pathlib import Path
 from v9kserial.connection import Connection
 from v9kserial import PacketProtocol
 from v9kfiletrx import (
-    Command, Direction, Status, StartPacket, DataPacket, EndPacket,
+    Command, Direction, Compression, Status, StartPacket, DataPacket, EndPacket,
     ReadyPacket, ListPacket, ListRespPacket, FileTransfer, crc32,
 )
-from v9kfiletrx.protocol import CHUNK_SIZE, parse_packet
+from v9kfiletrx.protocol import CHUNK_SIZE, DATA_FLAG_COMPRESSED, parse_packet
+from v9kfiletrx.compress import compress_if_beneficial, rle_decompress
 import igcfs
 from igcfs import IgcFileServer, CMD_DELETE, CMD_MKDIR, CMD_RENAME, CMD_OK, CMD_QUIT
 
@@ -75,31 +76,42 @@ def igc_list(pkt, path=''):
     return FileTransfer(pkt).list_directory(path)
 
 
-def igc_upload(pkt, data, remote_basename):
-    """Emulate igc's serialfs_put_named: START(VICTOR_TO_PC) -> READY ->
-    DATA... -> END -> wait for the server's CMD_OK/ERROR store status."""
+def igc_upload(pkt, data, remote_basename, rle=True):
+    """Emulate igc's serialfs_put_named: START(VICTOR_TO_PC, RLE) -> READY ->
+    DATA... -> END -> wait for the server's CMD_OK/ERROR store status. Like
+    the C sender, each chunk is compressed and flagged only when that saves
+    bytes; rle=False emulates an older igc that never compresses."""
     file_crc = crc32(data)
     total = max(1, (len(data) + CHUNK_SIZE - 1) // CHUNK_SIZE)
     date, tm = FileTransfer._unix_to_dos_datetime(0)
-    start = StartPacket(direction=Direction.VICTOR_TO_PC, file_size=len(data),
-                        file_crc=file_crc, file_date=date, file_time=tm,
-                        file_attr=0x20, filename=remote_basename)
+    start = StartPacket(direction=Direction.VICTOR_TO_PC,
+                        compression=Compression.RLE if rle else Compression.NONE,
+                        file_size=len(data), file_crc=file_crc, file_date=date,
+                        file_time=tm, file_attr=0x20, filename=remote_basename)
     pkt.send_packet(start.pack())
     ready = parse_packet(pkt.receive_packet(timeout=5))
     assert isinstance(ready, ReadyPacket) and ready.status == 0, "no READY"
     for i in range(total):
         chunk = data[i * CHUNK_SIZE:(i + 1) * CHUNK_SIZE]
-        pkt.send_packet(DataPacket(chunk_num=i, data=chunk).pack(), timeout=5)
+        flags = 0
+        if rle:
+            chunk, packed = compress_if_beneficial(chunk)
+            flags = DATA_FLAG_COMPRESSED if packed else 0
+        pkt.send_packet(DataPacket(chunk_num=i, data=chunk, flags=flags).pack(), timeout=5)
     pkt.send_packet(EndPacket(total_chunks=total, bytes_sent=len(data),
                               file_crc=file_crc, status=Status.OK).pack())
     reply = pkt.receive_packet(timeout=5)
     assert reply[0] == CMD_OK and reply[1] == 0, "upload not acknowledged"
 
 
-def igc_download(pkt, relpath):
-    """Emulate request + ftx_receive_file: request START(PC_TO_VICTOR) ->
-    recv START -> READY -> recv DATA... -> END."""
-    req = StartPacket(direction=Direction.PC_TO_VICTOR, filename=relpath)
+def igc_download(pkt, relpath, rle=True, stats=None):
+    """Emulate request + ftx_receive_file: request START(PC_TO_VICTOR, RLE) ->
+    recv START -> READY -> recv DATA... -> END. Chunks are expanded on the
+    per-chunk flag, as ftx_recv.c does. rle=False emulates an older igc that
+    requests no compression. stats, if given, collects
+    {'compressed': n, 'raw': n, 'wire': bytes}."""
+    req = StartPacket(direction=Direction.PC_TO_VICTOR, filename=relpath,
+                      compression=Compression.RLE if rle else Compression.NONE)
     pkt.send_packet(req.pack())
     start = parse_packet(pkt.receive_packet(timeout=5))
     assert isinstance(start, StartPacket), f"expected START, got {start}"
@@ -111,7 +123,13 @@ def igc_download(pkt, relpath):
         if isinstance(p, EndPacket):
             break
         assert isinstance(p, DataPacket) and p.chunk_num == expected
-        out.extend(p.data)
+        packed = bool(p.flags & DATA_FLAG_COMPRESSED)
+        assert rle or not packed, "server compressed although not asked to"
+        if stats is not None:
+            stats['compressed' if packed else 'raw'] = \
+                stats.get('compressed' if packed else 'raw', 0) + 1
+            stats['wire'] = stats.get('wire', 0) + len(p.data)
+        out.extend(rle_decompress(p.data) if packed else p.data)
         expected += 1
     assert crc32(bytes(out)) == start.file_crc, "download CRC mismatch"
     return bytes(out)
@@ -212,6 +230,32 @@ def main():
         # --- path-qualified upload (directory tree): name carries a separator,
         #     so the server stores it under root and auto-creates the parents,
         #     regardless of cwd. This is how igc copies whole directories. ---
+        # --- RLE: a run-heavy file shrinks on the wire, a 0x90-heavy one (the
+        #     escape byte, which would expand) stays raw, and a mix of both
+        #     exercises the per-chunk flag within one transfer. Older igcs that
+        #     request/announce no compression must still get raw bytes. ---
+        runs = b'\0' * 5000
+        mixed = (b'\x90' * 1024) + (b'A' * 1024) + bytes(range(256)) * 4 + b'\x90' * 7
+        (rootp / 'RUNS.BIN').write_bytes(runs)
+        (rootp / 'MIXED.BIN').write_bytes(mixed)
+        st = {}
+        check("rle download: run-heavy bytes match", igc_download(pkt, 'RUNS.BIN', stats=st) == runs)
+        check("rle download: run-heavy shrank on the wire",
+              st.get('wire', 0) < len(runs) // 10 and st.get('raw', 0) == 0)
+        st = {}
+        check("rle download: mixed bytes match", igc_download(pkt, 'MIXED.BIN', stats=st) == mixed)
+        check("rle download: mixed has both raw and compressed chunks",
+              st.get('raw', 0) >= 1 and st.get('compressed', 0) >= 1)
+        st = {}
+        check("no-rle download: old client gets raw chunks",
+              igc_download(pkt, 'RUNS.BIN', rle=False, stats=st) == runs
+              and st.get('compressed', 0) == 0)
+        igc_list(pkt, '')
+        igc_upload(pkt, mixed, 'MIXUP.BIN')
+        check("rle upload: mixed round-trips", (rootp / 'MIXUP.BIN').read_bytes() == mixed)
+        igc_upload(pkt, runs, 'RUNSUP.BIN', rle=False)
+        check("no-rle upload: old client round-trips", (rootp / 'RUNSUP.BIN').read_bytes() == runs)
+
         igc_list(pkt, 'SUB')  # point cwd elsewhere to prove it is ignored
         tree_payload = b'Y' * 2500
         igc_upload(pkt, tree_payload, 'TREE\\DEEP\\LEAF.BIN')

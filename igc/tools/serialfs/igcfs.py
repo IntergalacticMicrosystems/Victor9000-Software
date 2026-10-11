@@ -51,8 +51,9 @@ from v9kfiletrx import (
     ListPacket, ListRespPacket, DirEntry,
     FileTransfer, crc32_file, crc32,
 )
-from v9kfiletrx.compress import rle_decompress
-from v9kfiletrx.protocol import CHUNK_SIZE, ResendPacket, ErrorPacket, parse_packet
+from v9kfiletrx.compress import rle_decompress, compress_if_beneficial
+from v9kfiletrx.protocol import (CHUNK_SIZE, DATA_FLAG_COMPRESSED, ResendPacket,
+                                 ErrorPacket, parse_packet)
 
 # --- igc protocol extension (must match igc/src/serialfs_proto.h) -------------
 # The vetted FTX command space uses 0x10-0x1F (0x1F = QUIT); 0x1A-0x1D are free.
@@ -359,12 +360,16 @@ class IgcFileServer:
             self._reply_error(Error.NOT_FOUND, str(e))
             return
         t0 = time.time()
-        sent = self._send_file(src, os.path.basename(rel))
+        sent = self._send_file(src, os.path.basename(rel), start.compression)
         log(f"  -> sent {sent} bytes{_rate(sent, time.time() - t0)}")
 
-    def _send_file(self, src, remote_name):
+    def _send_file(self, src, remote_name, compression=Compression.NONE):
         """START(metadata) -> READY -> DATA... -> END, the PC->Victor send the
         Victor's stock ftx_receive_file expects.
+
+        compression is whatever the request START asked for: with RLE each chunk
+        is compressed when that saves bytes and flagged per chunk, exactly like
+        the C sender; incompressible chunks go raw and unflagged.
 
         Deliberately NOT FileTransfer.send_file: that ends with a trailing
         "wait for final ACK" receive which, against a back-to-back client, eats
@@ -376,17 +381,22 @@ class IgcFileServer:
         file_crc = crc32(data)
         total = max(1, (len(data) + CHUNK_SIZE - 1) // CHUNK_SIZE)
         date, tm = FileTransfer._unix_to_dos_datetime(src.stat().st_mtime)
-        start = StartPacket(direction=Direction.PC_TO_VICTOR, file_size=len(data),
-                            file_crc=file_crc, file_date=date, file_time=tm,
-                            file_attr=ATTR_ARCHIVE, filename=_dos_remote_name(remote_name))
+        start = StartPacket(direction=Direction.PC_TO_VICTOR, compression=compression,
+                            file_size=len(data), file_crc=file_crc, file_date=date,
+                            file_time=tm, file_attr=ATTR_ARCHIVE,
+                            filename=_dos_remote_name(remote_name))
         self.pkt.send_packet(start.pack())
         ready = parse_packet(self.ft._recv_packet())
         if not isinstance(ready, ReadyPacket) or ready.status != 0:
             raise IOError("receiver not ready")
         for i in range(total):
             chunk = data[i * CHUNK_SIZE:(i + 1) * CHUNK_SIZE]
+            flags = 0
+            if compression == Compression.RLE:
+                chunk, packed = compress_if_beneficial(chunk)
+                flags = DATA_FLAG_COMPRESSED if packed else 0
             try:
-                self.pkt.send_packet(DataPacket(chunk_num=i, data=chunk).pack(),
+                self.pkt.send_packet(DataPacket(chunk_num=i, data=chunk, flags=flags).pack(),
                                      timeout=self.ft.DATA_ACK_TIMEOUT)
             except PacketError as e:
                 log(f"  ! DATA chunk {i}/{total} (offset {i*CHUNK_SIZE}) failed: {e}")
@@ -470,8 +480,10 @@ class IgcFileServer:
                     if pkt.chunk_num != expected:
                         self.pkt.send_packet(ResendPacket(chunk_num=expected).pack())
                         continue
+                    # The per-chunk flag, not the START mode, gates expansion:
+                    # the sender leaves incompressible chunks raw and unflagged.
                     data = (rle_decompress(pkt.data)
-                            if start.compression == Compression.RLE else pkt.data)
+                            if pkt.flags & DATA_FLAG_COMPRESSED else pkt.data)
                     f.write(data)
                     expected += 1
             # Verify the whole-file CRC-32, stamp the original timestamp, and
