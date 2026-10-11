@@ -6,6 +6,11 @@ IGC ~ Volkov / Midnight / Norton Commander-like 2-pane file manager
 
 ![igc screenshot](igc/igc-screenshot.png)  
 
+**mouse**  
+
+Victor serial mouse driver (MOUSE.DEV from the RAT disk): byte-exact annotated NASM source,
+a MOUSE.COM TSR build of it, and a description of its INT 33h API and hardware use.  
+
 **key-remover**  
 
 3D Printed piece to help removing keys from a Victor keyboard backplate.  
