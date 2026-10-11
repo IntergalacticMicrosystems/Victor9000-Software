@@ -17,7 +17,6 @@
 #include "dialog.h"
 #include "fileops.h"
 #include "editor.h"
-#include "config.h"
 #include "serialfs.h"
 #include "mouse.h"
 
@@ -183,8 +182,10 @@ static void handle_fkey(uint8_t fkey_num)
         case 1:     /* F1: Drive */
             p = panel_get_active();
             drive = dlg_drive_select(p->drive);
-            if (drive == DLG_DRIVE_SERIAL) {
-                /* One serial pane at a time: there is a single COM1 session,
+            if (drive == DLG_DRIVE_SERIAL_A || drive == DLG_DRIVE_SERIAL_B) {
+                uint8_t port = (drive == DLG_DRIVE_SERIAL_B) ? SERIALFS_PORT_B
+                                                             : SERIALFS_PORT_A;
+                /* One serial pane at a time: there is a single serial session,
                  * and the server's upload directory tracks the last listing -
                  * two serial panes would fight over both. */
                 if (panel_get_other()->backend == PANEL_SERIAL) {
@@ -195,7 +196,7 @@ static void handle_fkey(uint8_t fkey_num)
                     break;
                 }
                 ui_status("Connecting to serial server...");
-                if (serialfs_connect(SERIALFS_PORT_A, SERIALFS_BAUD_DEFAULT)) {
+                if (serialfs_connect(port, SERIALFS_BAUD_DEFAULT)) {
                     ui_clear_status();
                     p->backend = PANEL_SERIAL;
                     p->drive = 0;
@@ -206,7 +207,9 @@ static void handle_fkey(uint8_t fkey_num)
                     g_need_redraw = TRUE;
                 } else {
                     ui_clear_status();
-                    ui_error("No serial server on COM1");
+                    ui_error(port == SERIALFS_PORT_B
+                             ? "No serial server on Serial B - run igcfs.exe on the host"
+                             : "No serial server on Serial A - run igcfs.exe on the host");
                     kbd_wait();
                 }
             } else if (drive >= 0) {
@@ -466,21 +469,17 @@ static void fatal_msg(const char *msg)
 /*---------------------------------------------------------------------------
  * Main entry point
  *---------------------------------------------------------------------------*/
-int main(int argc, char *argv[])
+int main(void)
 {
     /* Initialize memory system */
     mem_init();
 
     /* Fail critical errors (INT 24h) for the whole run on DOS 3+. Without
-     * this, touching a not-ready drive (empty floppy restored from IGC.INI,
-     * disk ejected mid-copy) pops DOS's "Abort, Retry, Ignore, Fail?" over
+     * this, touching a not-ready drive (empty floppy, disk ejected mid-copy)
+     * pops DOS's "Abort, Retry, Ignore, Fail?" over
      * the direct-VRAM UI, and Abort kills IGC with the screen unrestored.
      * With it, the DOS call returns an error our normal paths handle. */
     dos_install_crit_handler();
-
-    /* Point IGC.INI at the executable's directory (argv[0] is the full
-     * program path on DOS 3.0+); falls back to the CWD otherwise. */
-    config_init_path(argc > 0 ? argv[0] : (char *)0);
 
     /* Initialize screen */
     scr_init();
@@ -519,14 +518,6 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* Load configuration */
-    {
-        Config cfg;
-        if (config_load(&cfg)) {
-            config_apply(&cfg);
-        }
-    }
-
     /* Draw initial UI */
     ui_draw_frame();
     ui_draw_headers();
@@ -538,13 +529,6 @@ int main(int argc, char *argv[])
 
     /* Run main event loop */
     main_loop();
-
-    /* Save configuration */
-    {
-        Config cfg;
-        config_build(&cfg);
-        config_save(&cfg);
-    }
 
     /* Cleanup. The early-exit paths above skip the restore: DOS reloads the
      * INT 24h vector from the PSP when the process terminates anyway. */

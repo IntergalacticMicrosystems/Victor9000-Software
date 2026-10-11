@@ -2,7 +2,7 @@
  * serialfs.h - igc serial file-server backend
  *
  * Lets a panel browse and manipulate files served by igcfs.py on a modern PC
- * over a direct serial cable (Victor COM1 / Serial A). Built on the vetted
+ * over a direct serial cable (Victor Serial A or B). Built on the vetted
  * viclibc polled serial + packet + filetrx layers; this module is the only
  * place in igc that knows about that protocol, so panel/fileops just branch on
  * Panel.backend and call these.
@@ -26,15 +26,20 @@
  * receiver keeps up. The viclibc packet layer uses a tight polled-receive fast
  * path that drains the FIFO quickly enough to sustain 38400 without gating. */
 #define SERIALFS_PORT_A      0
+#define SERIALFS_PORT_B      1
 #define SERIALFS_BAUD_9600   6
 #define SERIALFS_BAUD_19200  7
 #define SERIALFS_BAUD_38400  8
 #define SERIALFS_BAUD_DEFAULT SERIALFS_BAUD_38400
 
-/* Open the single serial session on the given port (SER_PORT_A) at the given
- * baud index (SER_BAUD_*). Sends a RESET hello and returns FALSE if the server
- * does not answer (e.g. igcfs.py not running). */
+/* Open the single serial session on the given port (SERIALFS_PORT_A / _B) at
+ * the given baud index (SER_BAUD_*). Only that SIO channel is initialised, so a
+ * mouse driver on the other port keeps working. Sends a RESET hello and returns
+ * FALSE if the server does not answer (e.g. igcfs.py not running). */
 bool_t serialfs_connect(uint8_t port, uint8_t baud_idx);
+
+/* Port of the current (or last) session, SERIALFS_PORT_A / _B. */
+uint8_t serialfs_port(void);
 
 /* Drop the local session (does not stop the remote server). */
 void serialfs_disconnect(void);

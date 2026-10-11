@@ -58,6 +58,26 @@ extern void ser_hw_restore_int(uint16_t flags);
  * Initialization Functions
  *===========================================================================*/
 
+/* Reset one channel and set it to 8N1, 1200 baud. Interrupts must be off.
+ * Same write order as the original ser_init: reset, baud, bus (WR2), mode. */
+static void init_channel_defaults(uint8_t port) {
+    ser_state_t *state = ser_hw_get_state(port);
+
+    ser_hw_reset_channel(port);
+    ser_hw_set_baud_divisor(port, ser_hw_get_baud_divisor(SER_BAUD_1200));
+    ser_hw_config_bus();        /* Port A register, affects both channels */
+    ser_hw_config_mode(port, SER_STOP_1, SER_PARITY_NONE);
+    ser_hw_config_receiver(port, SER_DATA_8);
+    ser_hw_config_transmitter(port, SER_DATA_8, SER_TRUE, SER_TRUE);
+
+    state->baud_idx = SER_BAUD_1200;
+    state->data_bits = SER_DATA_8;
+    state->stop_bits = SER_STOP_1;
+    state->parity = SER_PARITY_NONE;
+    state->flow_ctrl = SER_FLOW_NONE;
+    state->error_flags = 0;
+}
+
 /**
  * Initialize serial subsystem (both ports to 8N1, 1200 baud).
  */
@@ -74,42 +94,24 @@ void ser_init(void) {
     (void)ser_hw_read_status(SER_PORT_A);
     (void)ser_hw_read_status(SER_PORT_B);
 
-    /* Reset both channels */
-    ser_hw_reset_channel(SER_PORT_A);
-    ser_hw_reset_channel(SER_PORT_B);
+    init_channel_defaults(SER_PORT_A);
+    init_channel_defaults(SER_PORT_B);
 
-    /* Set default baud rates (1200) */
-    ser_hw_set_baud_divisor(SER_PORT_A, ser_hw_get_baud_divisor(SER_BAUD_1200));
-    ser_hw_set_baud_divisor(SER_PORT_B, ser_hw_get_baud_divisor(SER_BAUD_1200));
+    _enable();
+}
 
-    /* Configure bus interface (Port A, affects both) */
-    ser_hw_config_bus();
-
-    /* Configure Port A: 8N1, DTR/RTS active */
-    ser_hw_config_mode(SER_PORT_A, SER_STOP_1, SER_PARITY_NONE);
-    ser_hw_config_receiver(SER_PORT_A, SER_DATA_8);
-    ser_hw_config_transmitter(SER_PORT_A, SER_DATA_8, SER_TRUE, SER_TRUE);
-
-    /* Configure Port B: 8N1, DTR/RTS active */
-    ser_hw_config_mode(SER_PORT_B, SER_STOP_1, SER_PARITY_NONE);
-    ser_hw_config_receiver(SER_PORT_B, SER_DATA_8);
-    ser_hw_config_transmitter(SER_PORT_B, SER_DATA_8, SER_TRUE, SER_TRUE);
-
-    /* Initialize state structures */
-    ser_state_a.baud_idx = SER_BAUD_1200;
-    ser_state_a.data_bits = SER_DATA_8;
-    ser_state_a.stop_bits = SER_STOP_1;
-    ser_state_a.parity = SER_PARITY_NONE;
-    ser_state_a.flow_ctrl = SER_FLOW_NONE;
-    ser_state_a.error_flags = 0;
-
-    ser_state_b.baud_idx = SER_BAUD_1200;
-    ser_state_b.data_bits = SER_DATA_8;
-    ser_state_b.stop_bits = SER_STOP_1;
-    ser_state_b.parity = SER_PARITY_NONE;
-    ser_state_b.flow_ctrl = SER_FLOW_NONE;
-    ser_state_b.error_flags = 0;
-
+/**
+ * Initialize one port (8N1, 1200 baud) and leave the other channel alone.
+ * For programs that share the SIO with a resident driver on the other
+ * port (e.g. the Victor mouse driver): ser_init() would reset that channel
+ * and the driver would stop receiving. The WR2A bus/interrupt mode written
+ * here (14h) is the same value DOS and the mouse driver use.
+ */
+void ser_init_one(uint8_t port) {
+    _disable();
+    ser_hw_init_via();
+    (void)ser_hw_read_status(port);
+    init_channel_defaults(port);
     _enable();
 }
 

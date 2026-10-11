@@ -104,18 +104,20 @@ void ui_draw_panel_path(Panel *p, uint8_t x_offset, bool_t active)
     /* Fill title area with horizontal lines */
     scr_hline(start_col, ROW_TITLE, end_col - start_col + 1, BOX_HORIZ, ATTR_DIM);
 
-    /* Build path string. A serial panel shows the link ("SER:\path") rather
-       than a drive letter, and has no DOS free-space figure. */
+    /* Build path string. A serial panel shows the link ("SERA:\path" or
+       "SERB:\path") rather than a drive letter, and has no DOS free-space
+       figure. */
     if (p->backend == PANEL_SERIAL) {
         buf[0] = 'S';
         buf[1] = 'E';
         buf[2] = 'R';
-        buf[3] = ':';
-        buf[4] = '\\';
+        buf[3] = 'A' + serialfs_port();
+        buf[4] = ':';
+        buf[5] = '\\';
         if (p->path[0] == '\\') {
-            str_copy_n(&buf[5], &p->path[1], 18);
+            str_copy_n(&buf[6], &p->path[1], 17);
         } else {
-            str_copy_n(&buf[5], p->path, 18);
+            str_copy_n(&buf[6], p->path, 17);
         }
     } else {
         buf[0] = 'A' + p->drive;

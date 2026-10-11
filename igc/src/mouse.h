@@ -38,6 +38,11 @@ void mouse_shutdown(void);
 /* TRUE if a driver was found at startup */
 bool_t mouse_present(void);
 
+/* Serial port the driver was loaded on: 0 = Serial A, 1 = Serial B, or
+ * MOUSE_PORT_NONE when there is no driver (or its port could not be read). */
+#define MOUSE_PORT_NONE 0xFF
+uint8_t mouse_port(void);
+
 /* Pointer visibility (idempotent: the driver's own show/hide counter is
  * kept balanced here) */
 void mouse_show(void);

@@ -1,7 +1,7 @@
 /*
  * serialfs.c - igc serial file-server backend implementation
  *
- * Talks to igcfs.py on a modern PC over the Victor's COM1 (Serial A) using the
+ * Talks to igcfs.py on a modern PC over the Victor's Serial A or B using the
  * vetted viclibc polled serial + packet + filetrx layers. igc is the client;
  * igcfs is the server.
  */
@@ -29,11 +29,12 @@
 #include "serialfs_proto.h"
 
 /*---------------------------------------------------------------------------
- * Single serial session state (only one COM1 link exists)
+ * Single serial session state (one link at a time, on Serial A or B)
  *---------------------------------------------------------------------------*/
 static pkt_state_t g_pkt;
 static ftx_state_t g_ftx;
 static bool_t      g_connected = FALSE;
+static uint8_t     g_port = SERIALFS_PORT_A;   /* port of the last successful connect */
 
 /* Scratch buffer for building/reading short control packets. Allocated on the
  * far heap in serialfs_connect (not held in DGROUP) and freed in
@@ -65,7 +66,8 @@ bool_t serialfs_connect(uint8_t port, uint8_t baud_idx)
         serialfs_disconnect();
     }
 
-    ser_init();                         /* both ports 8N1 */
+    ser_init_one(port);                 /* this channel only: the mouse driver
+                                           may own the other one (8N1) */
     ser_set_baud(port, baud_idx);
     pkt_init_polled(&g_pkt, port);      /* polled mode - no ISR on this port */
     ftx_init(&g_ftx, &g_pkt);
@@ -107,6 +109,7 @@ bool_t serialfs_connect(uint8_t port, uint8_t baud_idx)
         return FALSE;
     }
 
+    g_port = port;
     g_connected = TRUE;
     return TRUE;
 }
@@ -121,6 +124,11 @@ void serialfs_disconnect(void)
     g_io_buf = (uint8_t __far *)0;
     g_io_bufsize = 0;
     g_connected = FALSE;
+}
+
+uint8_t serialfs_port(void)
+{
+    return g_port;
 }
 
 bool_t serialfs_is_connected(void)
@@ -212,7 +220,7 @@ int serialfs_read_dir(Panel *p)
     ui_clear_status();
 
     if (rc < 0) {
-        ui_error("Serial server not responding");
+        ui_error("Serial server not responding - run igcfs.exe on the host");
         return -1;
     }
     return 0;
@@ -642,7 +650,7 @@ static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
     /* Collect this directory's entries into the arena above the current mark. */
     base = g_walk_used;
     if (ftx_list_dir(&g_ftx, remote_rel, sfs_walk_cb, &overflow) < 0) {
-        ui_error("Serial server not responding");
+        ui_error("Serial server not responding - run igcfs.exe on the host");
         kbd_wait();
         g_walk_used = base;
         return -1;
@@ -797,7 +805,7 @@ static int sfs_delete_tree_r(const char *remote_rel)
 
     base = g_walk_used;
     if (ftx_list_dir(&g_ftx, remote_rel, sfs_walk_cb, &overflow) < 0) {
-        ui_error("Serial server not responding");
+        ui_error("Serial server not responding - run igcfs.exe on the host");
         kbd_wait();
         g_walk_used = base;
         return -1;

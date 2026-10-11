@@ -418,13 +418,14 @@ int dlg_input(const char *title, const char *prompt, char *buf, uint16_t maxlen)
 /*---------------------------------------------------------------------------
  * dlg_drive_select - Drive selection dialog
  *---------------------------------------------------------------------------*/
-/* Pseudo "drive" value marking the serial-server entry in the drive list. */
-#define SFS_DRIVE_SENTINEL  0xFE
+/* Pseudo "drive" values marking the serial-server entries in the drive list. */
+#define SFS_DRIVE_A  0xFE
+#define SFS_DRIVE_B  0xFD
 
 int dlg_drive_select(uint8_t current_drive)
 {
     DialogWindow win;
-    uint8_t drives[27];     /* up to 26 real drives + the serial entry */
+    uint8_t drives[13];     /* up to 11 real drives + the two serial entries */
     uint8_t drive_count = 0;
     uint8_t i;
     uint8_t selected = 0;
@@ -432,8 +433,8 @@ int dlg_drive_select(uint8_t current_drive)
     KeyEvent key;
 
     /* Find valid drives. The window at y=8 fits 13 rows on a 25-line screen;
-       cap the real drives at 12 so the serial entry below always fits. */
-    for (i = 0; i < 26 && drive_count < 12; i++) {
+       cap the real drives at 11 so the two serial entries below always fit. */
+    for (i = 0; i < 26 && drive_count < 11; i++) {
         if (dos_is_drive_valid(i)) {
             if (i == current_drive) {
                 selected = drive_count;
@@ -442,15 +443,16 @@ int dlg_drive_select(uint8_t current_drive)
         }
     }
 
-    /* Offer the serial file server (COM1) as a final pseudo-entry. */
-    drives[drive_count++] = SFS_DRIVE_SENTINEL;
+    /* Offer the serial file server on either port as final pseudo-entries. */
+    drives[drive_count++] = SFS_DRIVE_A;
+    drives[drive_count++] = SFS_DRIVE_B;
 
     if (selected >= drive_count) {
         selected = 0;
     }
 
     /* Open dialog */
-    if (!dlg_open(&win, 30, 8, 20, drive_count + 4, "Select Drive")) {
+    if (!dlg_open(&win, 29, 8, 22, drive_count + 4, "Select Drive")) {
         return -1;
     }
 
@@ -461,15 +463,20 @@ int dlg_drive_select(uint8_t current_drive)
         for (i = 0; i < drive_count; i++) {
             uint8_t attr = (i == selected) ? ATTR_DIM_REV : ATTR_DIM;
             char label[4];
-            if (drives[i] == SFS_DRIVE_SENTINEL) {
-                scr_puts_n_xy(win.x + 2, win.y + 1 + i, " Serial A", 16, attr);
+            if (drives[i] == SFS_DRIVE_A || drives[i] == SFS_DRIVE_B) {
+                uint8_t port = (drives[i] == SFS_DRIVE_B) ? 1 : 0;
+                scr_puts_n_xy(win.x + 2, win.y + 1 + i,
+                              (mouse_port() == port)
+                                  ? (port ? " Serial B (mouse)" : " Serial A (mouse)")
+                                  : (port ? " Serial B" : " Serial A"),
+                              18, attr);
                 continue;
             }
             label[0] = ' ';
             label[1] = 'A' + drives[i];
             label[2] = ':';
             label[3] = '\0';
-            scr_puts_n_xy(win.x + 2, win.y + 1 + i, label, 16, attr);
+            scr_puts_n_xy(win.x + 2, win.y + 1 + i, label, 18, attr);
         }
 
         key = kbd_wait();
@@ -480,7 +487,7 @@ int dlg_drive_select(uint8_t current_drive)
                double-click) takes it. Clicks outside the list do nothing. */
             if (key.code != MOUSE_RIGHT &&
                 g_mouse_y > win.y && g_mouse_y <= win.y + drive_count &&
-                g_mouse_x > win.x + 1 && g_mouse_x < win.x + 18) {
+                g_mouse_x > win.x + 1 && g_mouse_x < win.x + 20) {
                 i = (uint8_t)(g_mouse_y - win.y - 1);
                 if (i == selected || key.code == MOUSE_LEFT_DBL) {
                     selected = i;
@@ -540,9 +547,16 @@ int dlg_drive_select(uint8_t current_drive)
         }
 
         if (activate) {
-            if (drives[selected] == SFS_DRIVE_SENTINEL) {
+            if (drives[selected] == SFS_DRIVE_A || drives[selected] == SFS_DRIVE_B) {
+                uint8_t port = (drives[selected] == SFS_DRIVE_B) ? 1 : 0;
+                /* The mouse driver owns its port's SIO channel and interrupt;
+                   connecting there would cut the mouse off. */
+                if (mouse_port() == port) {
+                    dlg_alert("Error", "Port in use by the mouse driver");
+                    continue;
+                }
                 dlg_close(&win);
-                return DLG_DRIVE_SERIAL;
+                return port ? DLG_DRIVE_SERIAL_B : DLG_DRIVE_SERIAL_A;
             }
             /* Check if drive is ready before selecting */
             if (!dos_is_drive_ready(drives[selected])) {

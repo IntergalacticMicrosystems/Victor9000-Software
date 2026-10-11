@@ -65,9 +65,11 @@ int dlg_input(const char *title, const char *prompt, char *buf, uint16_t maxlen)
  *---------------------------------------------------------------------------*/
 
 /* Drive selection dialog */
-/* Returns selected drive (0=A, 1=B, etc.), DLG_DRIVE_SERIAL for the serial
- * file server, or -1 if cancelled */
-#define DLG_DRIVE_SERIAL  100
+/* Returns selected drive (0=A, 1=B, etc.), DLG_DRIVE_SERIAL_A / _B for the
+ * serial file server on that port, or -1 if cancelled. The port the mouse
+ * driver is loaded on (mouse_port()) is listed but cannot be chosen. */
+#define DLG_DRIVE_SERIAL_A  100
+#define DLG_DRIVE_SERIAL_B  101
 int dlg_drive_select(uint8_t current_drive);
 
 /* Copy/Move confirmation dialog */

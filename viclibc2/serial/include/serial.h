@@ -145,6 +145,14 @@ typedef struct {
 void ser_init(void);
 
 /**
+ * Initialize one port (8N1, 1200 baud) without touching the other channel.
+ * Use instead of ser_init() when a resident driver (e.g. the mouse driver)
+ * owns the other port.
+ * @param port SER_PORT_A or SER_PORT_B
+ */
+void ser_init_one(uint8_t port);
+
+/**
  * Initialize a specific port with configuration.
  * @param config Port configuration
  * @return SER_TRUE on success, SER_FALSE on invalid parameters

@@ -21,6 +21,13 @@ uint8_t g_mouse_y = 0;
 
 static bool_t g_present = FALSE;
 static bool_t g_shown = FALSE;
+static uint8_t g_port = MOUSE_PORT_NONE;
+
+/* The driver's port_index word (0 = A, 1 = B) sits this far after its INT 33h
+ * entry: 0B26h - 008Ah in MOUSE.DEV, and the same distance in MOUSE.COM, whose
+ * resident image is the same bytes shifted by 100h. Verified against the
+ * reverse-engineered source in ../mouse (MOUSE.asm, MOUSE_DRIVER.md). */
+#define MOUSE_PORT_INDEX_OFS 0x0A9C
 
 /* Last left press, for double-click detection */
 static uint32_t g_last_time = 0;
@@ -59,6 +66,7 @@ bool_t mouse_init(void)
 
     g_present = FALSE;
     g_shown = FALSE;
+    g_port = MOUSE_PORT_NONE;
 
     /* Victor DOS leaves INT 33h as the boot ROM set it (null, or some stray
      * handler), so do not call it blindly. The Victor driver puts the text
@@ -76,6 +84,16 @@ bool_t mouse_init(void)
         if (sig[0] != 'M' || sig[1] != 'O' || sig[2] != 'U' ||
             sig[3] != 'S' || sig[4] != 'E') {
             return FALSE;
+        }
+    }
+    {
+        /* Which serial port the mouse is on, so the serial file server is
+         * not offered on it (see dlg_drive_select). Anything but 0 or 1 is
+         * not this driver's layout: report unknown rather than guess. */
+        uint16_t idx = *(const uint16_t __far *)
+                        MK_FP(sregs.es, regs.x.bx + MOUSE_PORT_INDEX_OFS);
+        if (idx <= 1) {
+            g_port = (uint8_t)idx;
         }
     }
 
@@ -126,6 +144,14 @@ void mouse_shutdown(void)
 bool_t mouse_present(void)
 {
     return g_present;
+}
+
+/*---------------------------------------------------------------------------
+ * mouse_port - Serial port the driver uses (MOUSE_PORT_NONE without one)
+ *---------------------------------------------------------------------------*/
+uint8_t mouse_port(void)
+{
+    return g_present ? g_port : MOUSE_PORT_NONE;
 }
 
 /*---------------------------------------------------------------------------

@@ -45,7 +45,7 @@ Uses far pointers (`__far`) for data larger than 64KB. Memory tier detection at 
 | `mem.c/h` | Far heap allocation, tier detection |
 | `screen.c/h` | VRAM access (0xF000), CRTC cursor control |
 | `keyboard.c/h` | DOS INT 9h, Victor 9000 key translation; `kbd_wait()` also polls the mouse and returns `KEY_MOUSE` events |
-| `mouse.c/h` | INT 33h driver wrapper (Victor MOUSE.DEV / MOUSE.COM): detect, software text pointer, click polling with double-click detection |
+| `mouse.c/h` | INT 33h driver wrapper (Victor MOUSE.DEV / MOUSE.COM): detect (incl. which serial port it owns), software text pointer, click polling with double-click detection |
 | `dosapi.c/h` | DOS INT 21h wrappers (files, directories, memory) |
 | `panel.c/h` | File list management, directory reading |
 | `ui.c/h` | Frame drawing, headers, F-key bar |
@@ -53,8 +53,7 @@ Uses far pointers (`__far`) for data larger than 64KB. Memory tier detection at 
 | `fileops.c/h` | Copy, move, delete, mkdir, rename (local + serial, incl. recursive directory trees) |
 | `editor.c/h` | Text viewer (F3) and editor (F4) |
 | `util.c/h` | String/path utilities |
-| `config.c/h` | INI file persistence |
-| `serialfs.c/h` | Serial file-server backend (igcfs over viclibc); file + directory-tree transfer, list, delete, mkdir, rename |
+| `serialfs.c/h` | Serial file-server backend (igcfs over viclibc) on Serial A or B; file + directory-tree transfer, list, delete, mkdir, rename |
 | `serialfs_proto.h` | igc↔igcfs protocol extension command bytes |
 
 ## Key Data Structures
@@ -172,6 +171,18 @@ INT 33h driver and IGC runs unchanged without one. Rules that keep it simple:
   entry (the Victor driver's signature, also what PICASSO tests) before the
   vector is ever called, because Victor DOS leaves INT 33h as the boot ROM
   set it.
+- `mouse_port()` reports the serial port the driver was loaded on. The driver
+  has no API for this, so `mouse_init()` reads its `port_index` word at a
+  fixed offset (0A9Ch) past the INT 33h entry; the offset is the same in
+  MOUSE.DEV and MOUSE.COM (same bytes, shifted by 100h). The source is in
+  `../mouse/` (MOUSE_DRIVER.md, section 9).
+  Values other than 0/1 are reported as `MOUSE_PORT_NONE`. The drive dialog
+  lists that port as `Serial x (mouse)` and refuses it: the driver owns the
+  channel and INT 41h, and a channel reset there would silence the mouse.
+- Serial file server and mouse coexist on different ports only because
+  `serialfs_connect()` calls viclibc's `ser_init_one(port)`, which resets and
+  programs just that SIO channel. Never call `ser_init()` / `ser_shutdown()`
+  from igc: both touch the other channel too.
 - Stale clicks: the second press of a double-click on a button or label
   usually arrives while the first click's action is running, and would land
   on whatever the next screen draws there. `mouse_new_context()` (called by

@@ -22,7 +22,6 @@
 - **Built-in editor** - View and edit text files
 - **Dynamic memory scaling** - Works on systems from 256KB to 512KB+ RAM
 - **Fast display** - Direct VRAM access for responsive UI
-- **Session persistence** - Remembers your last directory locations
 - **Serial file transfer** - Browse a directory on a modern PC over a serial cable and copy files and whole directory trees to/from the Victor
 - **Mouse support** - Optional. Click files, F-keys, dialog buttons and editor text with a Microsoft-compatible serial mouse (needs the Victor mouse driver, see below)
 
@@ -57,9 +56,12 @@
 
 IGC uses the mouse when the Victor serial mouse driver is loaded before it starts:
 either `device = mouse.dev a` in CONFIG.SYS (the RAT disk driver) or the `MOUSE.COM`
-TSR built from it (run `MOUSE` or `MOUSE B` at the prompt). Without a driver IGC
+TSR built from it (run `MOUSE A` or `MOUSE B` at the prompt; it only stays resident if a mouse
+answers on that port); both live in [`../mouse/`](../mouse/).
+Without a driver IGC
 behaves exactly as before. The pointer is a reverse-video cell and is shown while
-IGC is waiting for input.
+IGC is waiting for input. The mouse can share the machine with the serial file
+server: put the mouse on one port and the PC cable on the other (see below).
 
 | Where | Left click | Double-click | Right click |
 |-------|-----------|--------------|-------------|
@@ -82,12 +84,15 @@ the Victor without floppies.
 
 ### On the Victor (client)
 
-Press **F1** (Change drive) on a pane and select **Serial A** at the bottom of
-the drive list. The pane then browses the directory served by the PC and
+Press **F1** (Change drive) on a pane and select **Serial A** or **Serial B** at
+the bottom of the drive list, whichever port the cable is on. If the mouse driver
+is loaded, its port is shown as `Serial B (mouse)` (or A) and cannot be chosen:
+the driver owns that channel and connecting there would cut the mouse off.
+The pane then browses the directory served by the PC and
 supports the usual operations: browse, view/edit, copy in/out (F5), delete (F6),
 mkdir (F2), and rename (F8). Copy/move (F5) and delete (F6) handle whole
 directories too — a selected folder is copied recursively (single or nested) in
-either direction. The path is shown as `SER:\...`. Remote files are presented as
+either direction. The path is shown as `SERA:\...` or `SERB:\...`. Remote files are presented as
 uppercase 8.3 names (long/mixed-case names are mangled to `NAME~1.EXT`).
 
 Copying a file from the server over an existing local file asks before

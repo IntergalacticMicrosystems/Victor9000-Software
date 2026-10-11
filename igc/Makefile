@@ -83,7 +83,6 @@ SRCS = $(SRCDIR)/main.c \
        $(SRCDIR)/dialog.c \
        $(SRCDIR)/fileops.c \
        $(SRCDIR)/editor.c \
-       $(SRCDIR)/config.c \
        $(SRCDIR)/serialfs.c
 
 OBJS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.obj,$(SRCS))
