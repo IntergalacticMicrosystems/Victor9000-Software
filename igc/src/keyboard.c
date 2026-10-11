@@ -5,6 +5,7 @@
 
 #include <dos.h>
 #include "keyboard.h"
+#include "mouse.h"
 
 /*---------------------------------------------------------------------------
  * kbd_init - Initialize keyboard system
@@ -194,11 +195,29 @@ KeyEvent kbd_get(void)
 
 /*---------------------------------------------------------------------------
  * kbd_wait - Wait for key (blocking)
+ *
+ * With a mouse driver present this polls keyboard and mouse alternately and
+ * returns a KEY_MOUSE event for a click. The pointer is shown only inside
+ * this wait: every caller draws between waits, so the driver's pointer
+ * save/restore never fights IGC's own screen writes.
  *---------------------------------------------------------------------------*/
 KeyEvent kbd_wait(void)
 {
     KeyEvent e;
     int raw;
+
+    if (mouse_present()) {
+        mouse_show();
+        for (;;) {
+            if (kbd_check()) {
+                e = kbd_get();
+                if (e.type != KEY_NONE) break;
+            }
+            if (mouse_poll(&e)) break;
+        }
+        mouse_hide();
+        return e;
+    }
 
     /* Wait for key */
     raw = get_raw_char_wait();
@@ -231,6 +250,8 @@ void kbd_flush(void)
     regs.h.ah = 0x0C;
     regs.h.al = 0x00;   /* Just flush, don't read */
     int86(0x21, &regs, &regs);
+
+    mouse_flush();
 }
 
 /*---------------------------------------------------------------------------

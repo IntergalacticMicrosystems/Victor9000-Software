@@ -24,6 +24,7 @@
 - **Fast display** - Direct VRAM access for responsive UI
 - **Session persistence** - Remembers your last directory locations
 - **Serial file transfer** - Browse a directory on a modern PC over a serial cable and copy files and whole directory trees to/from the Victor
+- **Mouse support** - Optional. Click files, F-keys, dialog buttons and editor text with a Microsoft-compatible serial mouse (needs the Victor mouse driver, see below)
 
 ## Keyboard Controls
 
@@ -51,6 +52,27 @@
 | F6 | Delete |
 | F7 | Quit (F10 also quits) |
 | F8 | Rename |
+
+## Mouse
+
+IGC uses the mouse when the Victor serial mouse driver is loaded before it starts:
+either `device = mouse.dev a` in CONFIG.SYS (the RAT disk driver) or the `MOUSE.COM`
+TSR built from it (run `MOUSE` or `MOUSE B` at the prompt). Without a driver IGC
+behaves exactly as before. The pointer is a reverse-video cell and is shown while
+IGC is waiting for input.
+
+| Where | Left click | Double-click | Right click |
+|-------|-----------|--------------|-------------|
+| File rows | Activate that panel and move the cursor to the file | Open the directory, or View (F3) a file | Move the cursor there and toggle its selection (cursor stays) |
+| Panel title bar | Activate that panel | | |
+| F-key bar (bottom row) | Same as pressing that F-key | | |
+| Dialog buttons | Press the button ([Yes] [No] [OK] [Cancel]) | | |
+| Drive list | Select the row; click it again to choose it | Choose the row | |
+| Rename / Mkdir input field | Put the text cursor there | | |
+| Editor text | Put the cursor there | | |
+| Editor help bar | Save, Cut, Paste, Exit as labelled | | |
+
+A click on any "press a key" message dismisses it, like a key.
 
 ## Serial File Transfer
 

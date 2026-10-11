@@ -10,6 +10,7 @@
 #include "ui.h"
 #include "util.h"
 #include "dialog.h"
+#include "mouse.h"
 
 /*---------------------------------------------------------------------------
  * Static Variables
@@ -820,6 +821,50 @@ static bool_t confirm_exit(void)
 }
 
 /*---------------------------------------------------------------------------
+ * mouse_to_key - Turn a click into the key it stands for
+ *
+ * A left click in the text places the cursor there and returns KEY_NONE.
+ * A click on a help-bar label returns that label's key (F2, F7, ^K, ^U) so
+ * the normal dispatch handles it. Anything else returns KEY_NONE.
+ *---------------------------------------------------------------------------*/
+static KeyEvent mouse_to_key(KeyEvent *m)
+{
+    KeyEvent k;
+    uint8_t x = g_mouse_x, y = g_mouse_y;
+
+    k.type = KEY_NONE;
+    k.code = 0;
+    if (m->code == MOUSE_RIGHT) return k;
+
+    if (y == 24) {
+        /* Labels are 8 cells wide at columns 0, 11, 22, 33 (draw_help_bar) */
+        if (g_editor.readonly) {
+            if (x < 8) { k.type = KEY_EXTENDED; k.code = KEY_F7; }
+        } else if (x < 8) {
+            k.type = KEY_EXTENDED; k.code = KEY_F2;
+        } else if (x >= 11 && x < 19) {
+            k.type = KEY_ASCII; k.code = 11;        /* Ctrl-K */
+        } else if (x >= 22 && x < 30) {
+            k.type = KEY_ASCII; k.code = 21;        /* Ctrl-U */
+        } else if (x >= 33 && x < 41) {
+            k.type = KEY_EXTENDED; k.code = KEY_F7;
+        }
+        return k;
+    }
+
+    if (y >= EDIT_TOP_ROW && y < EDIT_TOP_ROW + EDIT_ROWS &&
+        x >= EDIT_LEFT_COL && x < EDIT_LEFT_COL + EDIT_COLS) {
+        uint16_t line = g_editor.top_line + (y - EDIT_TOP_ROW);
+        if (line >= g_editor.total_lines) line = g_editor.total_lines - 1;
+        g_last_was_cut = FALSE;
+        g_editor.cursor_line = line;
+        g_editor.cursor_col = g_editor.left_col + (x - EDIT_LEFT_COL);
+        clamp_cursor_col();
+    }
+    return k;
+}
+
+/*---------------------------------------------------------------------------
  * editor_run - Main editor loop
  *---------------------------------------------------------------------------*/
 static void editor_run(void)
@@ -830,9 +875,14 @@ static void editor_run(void)
     draw_screen();
     scr_cursor_on();
     update_cursor();
+    mouse_new_context();
 
     while (running) {
         key = kbd_wait();
+
+        if (key.type == KEY_MOUSE) {
+            key = mouse_to_key(&key);
+        }
 
         if (key.type == KEY_ASCII) {
             switch (key.code) {
@@ -932,6 +982,7 @@ static void editor_run(void)
     }
 
     scr_cursor_off();
+    mouse_new_context();
 }
 
 /*---------------------------------------------------------------------------

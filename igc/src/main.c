@@ -5,6 +5,7 @@
  * A two-pane file manager inspired by Midnight Commander
  */
 
+#include <dos.h>
 #include "igc.h"
 #include "mem.h"
 #include "screen.h"
@@ -18,12 +19,15 @@
 #include "editor.h"
 #include "config.h"
 #include "serialfs.h"
+#include "mouse.h"
 
 /*---------------------------------------------------------------------------
  * Forward declarations
  *---------------------------------------------------------------------------*/
 static void handle_key(KeyEvent *key);
 static void handle_navigation(uint8_t code);
+static void handle_fkey(uint8_t fkey_num);
+static void handle_mouse(uint8_t button);
 static void handle_enter(void);
 static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit);
 
@@ -32,6 +36,19 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit);
  *---------------------------------------------------------------------------*/
 static bool_t g_running = TRUE;
 static bool_t g_need_redraw = TRUE;
+
+/*---------------------------------------------------------------------------
+ * ctrl_break_handler - INT 23h: ignore Ctrl-C / Ctrl-Break
+ *
+ * The DOS keyboard-status and clock calls used while polling for input (the
+ * mouse wait, the copy-cancel checks) run INT 23h when they see ^C, and the
+ * default handler terminates the program with the screen torn down and the
+ * mouse pointer still live. Returning normally tells DOS to carry on. DOS
+ * restores the previous vector from the PSP when IGC exits.
+ *---------------------------------------------------------------------------*/
+static void __interrupt __far ctrl_break_handler(void)
+{
+}
 
 /*---------------------------------------------------------------------------
  * handle_enter - Handle Enter key (enter directory or action)
@@ -274,11 +291,89 @@ static void handle_fkey(uint8_t fkey_num)
 }
 
 /*---------------------------------------------------------------------------
+ * handle_mouse - Process a click at g_mouse_x / g_mouse_y
+ *
+ *   F-key bar (row 24)      left click on a label = that F-key
+ *   title bar (row 0)       activate that panel
+ *   file rows (rows 2-20)   left: activate panel, move cursor to the row;
+ *                           double-click on the cursor row = Enter on a
+ *                           directory, View on a file
+ *                           right: move cursor to the row and toggle its
+ *                           selection (cursor stays, unlike Space)
+ *---------------------------------------------------------------------------*/
+static void handle_mouse(uint8_t button)
+{
+    Panel *p;
+    uint8_t x = g_mouse_x, y = g_mouse_y;
+    uint8_t which;
+    uint16_t idx, old_cursor, old_top;
+
+    if (y == ROW_FKEYS) {
+        if (button != MOUSE_RIGHT && x < 80) {
+            handle_fkey((uint8_t)(x / 10 + 1));
+        }
+        return;
+    }
+
+    /* Only the panels from here on. The centre column (39) and the outer
+       borders belong to neither. */
+    if (x == 0 || x == MID_COL || x == 79) return;
+    which = (x < MID_COL) ? 0 : 1;
+    if (y != ROW_TITLE && (y < ROW_FILES_START || y > ROW_FILES_END)) return;
+
+    if (which != g_active_panel) {
+        panel_switch();
+        ui_draw_title_bar();
+        g_need_redraw = TRUE;
+    }
+    if (y == ROW_TITLE) return;
+
+    p = panel_get_active();
+    idx = p->top + (y - ROW_FILES_START);
+    if (idx >= p->files.count) return;
+    old_cursor = p->cursor;
+    old_top = p->top;
+
+    if (button == MOUSE_RIGHT) {
+        p->cursor = idx;
+        panel_toggle_selection(p);
+        if (!g_need_redraw) {
+            if (idx == old_cursor) {
+                ui_draw_panel_row(p, which ? RIGHT_PANEL_X : LEFT_PANEL_X, TRUE, idx);
+            } else {
+                ui_update_cursor(old_cursor, old_top);
+            }
+        }
+        return;
+    }
+
+    if (button == MOUSE_LEFT_DBL && idx == old_cursor) {
+        FileEntry __far *f = panel_get_cursor_file(p);
+        if (f != (FileEntry __far *)0 && !file_is_dir(f)) {
+            handle_fkey(3);                 /* View, as F3 */
+        } else {
+            handle_enter();
+        }
+        return;
+    }
+
+    p->cursor = idx;
+    if (!g_need_redraw) {
+        ui_update_cursor(old_cursor, old_top);
+    }
+}
+
+/*---------------------------------------------------------------------------
  * handle_key - Process a key event
  *---------------------------------------------------------------------------*/
 static void handle_key(KeyEvent *key)
 {
     Panel *p;
+
+    if (key->type == KEY_MOUSE) {
+        handle_mouse(key->code);
+        return;
+    }
 
     if (key->type == KEY_EXTENDED) {
         /* Navigation keys */
@@ -392,8 +487,10 @@ int main(int argc, char *argv[])
     scr_clear();
     scr_cursor_off();
 
-    /* Initialize keyboard */
+    /* Initialize keyboard and mouse (optional: needs MOUSE.DEV / MOUSE.COM) */
+    _dos_setvect(0x23, ctrl_break_handler);
     kbd_init();
+    mouse_init();
 
     /* Initialize panels */
     if (!panels_init()) {
@@ -451,6 +548,7 @@ int main(int argc, char *argv[])
 
     /* Cleanup. The early-exit paths above skip the restore: DOS reloads the
      * INT 24h vector from the PSP when the process terminates anyway. */
+    mouse_shutdown();
     editor_shutdown();
     fops_shutdown();
     panels_free();

@@ -105,6 +105,7 @@ typedef uint8_t bool_t;
 #define KEY_NONE        0
 #define KEY_ASCII       1
 #define KEY_EXTENDED    2
+#define KEY_MOUSE       3       /* code = MOUSE_* (mouse.h); cell in g_mouse_x/y */
 
 /* Extended key scan codes (IBM AT compatible) */
 #define KEY_F1          0x3B
@@ -227,8 +228,8 @@ typedef uint8_t bool_t;
  * Key Event Structure
  *---------------------------------------------------------------------------*/
 typedef struct {
-    uint8_t type;       /* KEY_NONE, KEY_ASCII, KEY_EXTENDED */
-    uint8_t code;       /* ASCII code or scan code */
+    uint8_t type;       /* KEY_NONE, KEY_ASCII, KEY_EXTENDED, KEY_MOUSE */
+    uint8_t code;       /* ASCII code, scan code or mouse button */
 } KeyEvent;
 
 #endif /* IGC_H */

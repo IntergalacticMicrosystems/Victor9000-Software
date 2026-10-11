@@ -8,6 +8,7 @@
 #include "mem.h"
 #include "util.h"
 #include "dosapi.h"
+#include "mouse.h"
 
 /*---------------------------------------------------------------------------
  * dlg_open - Open a dialog window
@@ -77,6 +78,7 @@ void dlg_close(DialogWindow *win)
         mem_free(win->save);
         win->save = (uint16_t __far *)0;
     }
+    mouse_new_context();
 }
 
 /*---------------------------------------------------------------------------
@@ -109,6 +111,15 @@ static void draw_button(uint8_t x, uint8_t y, const char *label, bool_t selected
     scr_putc_xy(x, y, '[', attr);
     scr_puts_xy(x + 1, y, label, attr);
     scr_putc_xy(x + 1 + str_len(label), y, ']', attr);
+}
+
+/*---------------------------------------------------------------------------
+ * button_hit - TRUE if the last click landed on the "[label]" drawn at x,y
+ *---------------------------------------------------------------------------*/
+static bool_t button_hit(uint8_t x, uint8_t y, const char *label)
+{
+    return (g_mouse_y == y && g_mouse_x >= x &&
+            g_mouse_x < x + 2 + str_len(label)) ? TRUE : FALSE;
 }
 
 /*---------------------------------------------------------------------------
@@ -173,15 +184,23 @@ int dlg_confirm(const char *title, const char *message)
 
     while (1) {
         /* Draw buttons - centered: "[Yes]" (5) + 2 spaces + "[No]" (4) = 11 chars */
-        {
-            uint8_t btn_start = win.x + (w - 11) / 2;
-            draw_button(btn_start, win.y + 3, "Yes", (selected == 0));
-            draw_button(btn_start + 7, win.y + 3, "No", (selected == 1));
-        }
+        uint8_t btn_start = win.x + (w - 11) / 2;
+        draw_button(btn_start, win.y + 3, "Yes", (selected == 0));
+        draw_button(btn_start + 7, win.y + 3, "No", (selected == 1));
 
         key = kbd_wait();
 
-        if (key.type == KEY_ASCII) {
+        if (key.type == KEY_MOUSE) {
+            if (key.code == MOUSE_RIGHT) continue;
+            if (button_hit(btn_start, win.y + 3, "Yes")) {
+                dlg_close(&win);
+                return DLG_YES;
+            }
+            if (button_hit(btn_start + 7, win.y + 3, "No")) {
+                dlg_close(&win);
+                return DLG_NO;
+            }
+        } else if (key.type == KEY_ASCII) {
             switch (key.code) {
                 case 'y':
                 case 'Y':
@@ -249,16 +268,15 @@ int dlg_input(const char *title, const char *prompt, char *buf, uint16_t maxlen)
     scr_cursor_on();
 
     while (1) {
+        /* Draw buttons - centered: "[OK]" (4) + 2 spaces + "[Cancel]" (8) = 14 chars */
+        uint8_t btn_start = win.x + (w - 14) / 2;
+
         /* Draw input field */
         scr_fill_rect(input_x, win.y + 2, input_w, 1, ' ', ATTR_DIM_REV);
         scr_puts_n_xy(input_x, win.y + 2, buf, input_w, ATTR_DIM_REV);
 
-        /* Draw buttons - centered: "[OK]" (4) + 2 spaces + "[Cancel]" (8) = 14 chars */
-        {
-            uint8_t btn_start = win.x + (w - 14) / 2;
-            draw_button(btn_start, win.y + 4, "OK", (in_buttons && btn_selected == 0));
-            draw_button(btn_start + 6, win.y + 4, "Cancel", (in_buttons && btn_selected == 1));
-        }
+        draw_button(btn_start, win.y + 4, "OK", (in_buttons && btn_selected == 0));
+        draw_button(btn_start + 6, win.y + 4, "Cancel", (in_buttons && btn_selected == 1));
 
         /* Position cursor */
         if (in_buttons) {
@@ -270,7 +288,26 @@ int dlg_input(const char *title, const char *prompt, char *buf, uint16_t maxlen)
 
         key = kbd_wait();
 
-        if (key.type == KEY_ASCII) {
+        if (key.type == KEY_MOUSE) {
+            if (key.code == MOUSE_RIGHT) continue;
+            if (button_hit(btn_start, win.y + 4, "OK")) {
+                scr_cursor_off();
+                dlg_close(&win);
+                return DLG_OK;
+            }
+            if (button_hit(btn_start + 6, win.y + 4, "Cancel")) {
+                scr_cursor_off();
+                dlg_close(&win);
+                return DLG_CANCEL;
+            }
+            if (g_mouse_y == win.y + 2 && g_mouse_x >= input_x &&
+                g_mouse_x < input_x + input_w) {
+                /* Click in the field: edit there */
+                in_buttons = 0;
+                cursor = g_mouse_x - input_x;
+                if (cursor > str_len(buf)) cursor = str_len(buf);
+            }
+        } else if (key.type == KEY_ASCII) {
             switch (key.code) {
                 case KEY_ENTER:
                     scr_cursor_off();
@@ -391,6 +428,7 @@ int dlg_drive_select(uint8_t current_drive)
     uint8_t drive_count = 0;
     uint8_t i;
     uint8_t selected = 0;
+    bool_t activate;
     KeyEvent key;
 
     /* Find valid drives. The window at y=8 fits 13 rows on a 25-line screen;
@@ -435,21 +473,27 @@ int dlg_drive_select(uint8_t current_drive)
         }
 
         key = kbd_wait();
+        activate = FALSE;
 
-        if (key.type == KEY_ASCII) {
+        if (key.type == KEY_MOUSE) {
+            /* Click on a row selects it; a click on the selected row (or a
+               double-click) takes it. Clicks outside the list do nothing. */
+            if (key.code != MOUSE_RIGHT &&
+                g_mouse_y > win.y && g_mouse_y <= win.y + drive_count &&
+                g_mouse_x > win.x + 1 && g_mouse_x < win.x + 18) {
+                i = (uint8_t)(g_mouse_y - win.y - 1);
+                if (i == selected || key.code == MOUSE_LEFT_DBL) {
+                    selected = i;
+                    activate = TRUE;
+                } else {
+                    selected = i;
+                }
+            }
+        } else if (key.type == KEY_ASCII) {
             switch (key.code) {
                 case KEY_ENTER:
-                    if (drives[selected] == SFS_DRIVE_SENTINEL) {
-                        dlg_close(&win);
-                        return DLG_DRIVE_SERIAL;
-                    }
-                    /* Check if drive is ready before selecting */
-                    if (!dos_is_drive_ready(drives[selected])) {
-                        dlg_alert("Error", "Drive not ready");
-                        break;
-                    }
-                    dlg_close(&win);
-                    return drives[selected];
+                    activate = TRUE;
+                    break;
 
                 case KEY_ESC:
                     dlg_close(&win);
@@ -493,6 +537,20 @@ int dlg_drive_select(uint8_t current_drive)
                     dlg_close(&win);
                     return -1;
             }
+        }
+
+        if (activate) {
+            if (drives[selected] == SFS_DRIVE_SENTINEL) {
+                dlg_close(&win);
+                return DLG_DRIVE_SERIAL;
+            }
+            /* Check if drive is ready before selecting */
+            if (!dos_is_drive_ready(drives[selected])) {
+                dlg_alert("Error", "Drive not ready");
+                continue;
+            }
+            dlg_close(&win);
+            return drives[selected];
         }
     }
 }

@@ -44,7 +44,8 @@ Uses far pointers (`__far`) for data larger than 64KB. Memory tier detection at 
 | `main.c` | Entry point, event loop, key dispatch |
 | `mem.c/h` | Far heap allocation, tier detection |
 | `screen.c/h` | VRAM access (0xF000), CRTC cursor control |
-| `keyboard.c/h` | DOS INT 9h, Victor 9000 key translation |
+| `keyboard.c/h` | DOS INT 9h, Victor 9000 key translation; `kbd_wait()` also polls the mouse and returns `KEY_MOUSE` events |
+| `mouse.c/h` | INT 33h driver wrapper (Victor MOUSE.DEV / MOUSE.COM): detect, software text pointer, click polling with double-click detection |
 | `dosapi.c/h` | DOS INT 21h wrappers (files, directories, memory) |
 | `panel.c/h` | File list management, directory reading |
 | `ui.c/h` | Frame drawing, headers, F-key bar |
@@ -61,8 +62,9 @@ Uses far pointers (`__far`) for data larger than 64KB. Memory tier detection at 
 ```c
 // Key event (igc.h)
 typedef struct {
-    uint8_t type;   // KEY_NONE, KEY_ASCII, KEY_EXTENDED
-    uint8_t code;   // ASCII or scan code
+    uint8_t type;   // KEY_NONE, KEY_ASCII, KEY_EXTENDED, KEY_MOUSE
+    uint8_t code;   // ASCII or scan code; for KEY_MOUSE: MOUSE_LEFT / MOUSE_RIGHT /
+                    // MOUSE_LEFT_DBL, with the clicked cell in g_mouse_x / g_mouse_y
 } KeyEvent;
 
 // File entry (panel.h) - 26 bytes with default -zp2 packing
@@ -144,6 +146,45 @@ files[i].name;
 // Release with:
 mem_free(files);
 ```
+
+### Mouse Input
+The mouse is optional: `mouse_init()` (main.c, after `scr_init()`) looks for an
+INT 33h driver and IGC runs unchanged without one. Rules that keep it simple:
+- Only `kbd_wait()` talks to the mouse. It shows the pointer, polls keyboard and
+  mouse, hides the pointer and returns. All drawing happens between waits, so
+  the driver's save/restore of the cell under the pointer cannot corrupt the
+  screen. Never draw while the pointer is shown.
+- The driver is reset with `BX = 1`. `BX = 0` would make it re-initialise the
+  serial port and power-cycle the mouse (slow, and it hooks INT 41h again).
+- The pointer is the driver's software text cursor (fn 10: AND `FFFF`, XOR
+  `8000` = flip reverse video). The driver's default is the 6845 hardware
+  cursor, which the editor and input fields use for their own cursor.
+- Clicks come from fn 5 (press counts), so a click is not lost if it happens
+  while IGC is busy; `kbd_flush()` also drops pending clicks.
+- Input loops that do not understand `KEY_MOUSE` just ignore it (they switch
+  on `KEY_ASCII` / `KEY_EXTENDED`). Loops that do: `handle_mouse()` in main.c
+  (panels, title bar, F-key bar), `dlg_confirm`, `dlg_input`,
+  `dlg_drive_select` (button/row hit tests against the same coordinates the
+  draw code uses), and `mouse_to_key()` in editor.c (text click, help bar).
+- Positions: the driver reports pixels on an 800x400 grid; text cells are
+  10x16, so cell = x/10, y/16.
+- Detection checks for the text `MOUSE` in the 5 bytes before the INT 33h
+  entry (the Victor driver's signature, also what PICASSO tests) before the
+  vector is ever called, because Victor DOS leaves INT 33h as the boot ROM
+  set it.
+- Stale clicks: the second press of a double-click on a button or label
+  usually arrives while the first click's action is running, and would land
+  on whatever the next screen draws there. `mouse_new_context()` (called by
+  `dlg_close()` and at editor open/close, and implied by `kbd_flush()`) marks
+  a screen change; the next `kbd_wait()` then drains presses queued since
+  the previous wait before showing the pointer. Call it from any new
+  screen-changing code that a single click can trigger. This is deliberately
+  independent of timing: a slow floppy operation can delay the next wait by
+  seconds.
+- Any click dismisses "press a key" pauses and `dlg_alert`, like a key.
+- Polling uses DOS calls that run INT 23h on Ctrl-C, so main.c installs a
+  do-nothing INT 23h handler at startup. Without it Ctrl-C would exit IGC
+  mid-screen with the pointer still live.
 
 ### Dialog Overlay Pattern
 `dlg_open()` saves the background and draws the frame; `dlg_close()`

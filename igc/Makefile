@@ -75,6 +75,7 @@ SRCS = $(SRCDIR)/main.c \
        $(SRCDIR)/mem.c \
        $(SRCDIR)/screen.c \
        $(SRCDIR)/keyboard.c \
+       $(SRCDIR)/mouse.c \
        $(SRCDIR)/dosapi.c \
        $(SRCDIR)/panel.c \
        $(SRCDIR)/ui.c \
