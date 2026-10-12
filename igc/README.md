@@ -23,6 +23,7 @@
 - **Dynamic memory scaling** - Works on systems from 256KB to 512KB+ RAM
 - **Fast display** - Direct VRAM access for responsive UI
 - **Serial file transfer** - Browse a directory on a modern PC over a serial cable and copy files and whole directory trees to/from the Victor
+- **Disk images** - Read a Victor floppy into a `.IMG` / `.RLE` image file, or write an image back onto a floppy (local drive or serial server)
 - **Mouse support** - Optional. Click files, F-keys, dialog buttons and editor text with a Microsoft-compatible serial mouse (needs the Victor mouse driver, see below)
 
 ## Keyboard Controls
@@ -47,10 +48,10 @@
 | F2 | Create directory |
 | F3 | View file (read-only) |
 | F4 | Edit file |
-| F5 | Copy/Move |
-| F6 | Delete |
+| F5 | Files: (C)opy, (M)ove, (D)elete or (R)ename |
+| F6 | More: disk images (read disk to image file, write image file to disk) |
 | F7 | Quit (F10 also quits) |
-| F8 | Rename |
+| F8 | (unassigned) |
 
 ## Mouse
 
@@ -69,7 +70,7 @@ server: put the mouse on one port and the PC cable on the other (see below).
 | Panel title bar | Activate that panel | | |
 | F-key bar (bottom row) | Same as pressing that F-key | | |
 | Dialog buttons | Press the button ([Yes] [No] [OK] [Cancel]) | | |
-| Drive list | Select the row; click it again to choose it | Choose the row | |
+| Drive list, F6 menu, floppy list | Select the row; click it again to choose it | Choose the row | |
 | Rename / Mkdir input field | Put the text cursor there | | |
 | Editor text | Put the cursor there | | |
 | Editor help bar | Save, Cut, Paste, Exit as labelled | | |
@@ -89,8 +90,8 @@ the bottom of the drive list, whichever port the cable is on. If the mouse drive
 is loaded, its port is shown as `Serial B (mouse)` (or A) and cannot be chosen:
 the driver owns that channel and connecting there would cut the mouse off.
 The pane then browses the directory served by the PC and
-supports the usual operations: browse, view/edit, copy in/out (F5), delete (F6),
-mkdir (F2), and rename (F8). Copy/move (F5) and delete (F6) handle whole
+supports the usual operations: browse, view/edit, copy in/out, delete and rename
+(all under F5), mkdir (F2), and disk images (F6). Copy, move and delete handle whole
 directories too — a selected folder is copied recursively (single or nested) in
 either direction. The path is shown as `SERA:\...` or `SERB:\...`. Remote files are presented as
 uppercase 8.3 names (long/mixed-case names are mangled to `NAME~1.EXT`).
@@ -102,8 +103,10 @@ copies overwrite silently — the server side cannot be probed per file.
 The link runs **8N1 at 38400 baud over a 3-wire cable (no hardware flow control)**.
 
 > **Version pairing:** igc waits for the server to confirm each upload after
-> the transfer completes, so `igc.exe` and `igcfs` must be updated together —
-> a new igc against an old igcfs reports every upload as failed.
+> the transfer completes, and disk images use protocol commands only a current
+> igcfs knows, so `igc.exe` and `igcfs` must be updated together — a new igc
+> against an old igcfs reports every upload as failed and says "Server does not
+> support disk images".
 
 ### On the PC (server)
 
@@ -131,6 +134,36 @@ python3 -m venv .venv
 > multi-packet transfers come from the Victor's lean polled-receive path. A plain
 > TX/RX/GND cable is all you need — see [`tools/serialfs/README.md`](tools/serialfs/README.md)
 > for the full protocol and baud-rate notes.
+
+## Disk images
+
+F6 (More) copies a whole Victor floppy to an image file and back, one track at
+a time through DOS (INT 25h / 26h). Only drives A: and B: are offered.
+
+- **`.IMG`** is the raw image in DOS sector order, exactly what MAME uses:
+  626,688 bytes for a single-sided disk, 1,224,192 for a double-sided one.
+- **`.RLE`** is the same image run-length compressed (the serial link's RLE
+  scheme) behind a 16-byte header holding the raw size and a CRC-32. Mostly
+  empty disks shrink a lot.
+
+**Read disk to image file:** pick the floppy, type a file name (default
+`DISK.IMG`; the extension `.IMG` or `.RLE` picks the format). The image is
+written to the active pane's directory — a local drive or the serial server
+(an existing file of that name asks before being overwritten). Sidedness comes
+from the disk label. Esc between tracks aborts and deletes the partial image.
+
+**Write image file to disk:** put the cursor on a `.IMG` / `.RLE` file in the
+active pane (local or serial), press F6, choose the target floppy and confirm.
+The target must already be a **formatted Victor disk of the same sidedness**
+(the Victor's GCR format cannot be laid down through DOS); everything on it is
+overwritten. A local `.RLE` is decoded and CRC-checked in full before the first
+track is written, so a truncated or corrupt file is refused while the floppy is
+still intact (the server does the same check for serial images). A read or
+write error offers Retry / Abort per track. IGC refuses to write onto the disk
+it was started from.
+
+On the PC, `tools/serialfs/v9kimg.py` converts between the formats
+(`pack` .IMG to .RLE, `unpack` .RLE to .IMG, `info`).
 
 ## Installation
 

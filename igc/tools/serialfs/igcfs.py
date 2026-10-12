@@ -30,13 +30,18 @@ Wire protocol (per request, all carried as reliable DATA packets):
         direction PC_TO_VICTOR  -> Victor is pulling a file: we SEND it.
   - DELETE (0x1A) / MKDIR (0x1B) / RENAME (0x1C): filesystem op, reply OK/ERROR.
   - QUIT   (0x1F): stop serving.
+  - IMG_OPEN/IMG_GET/IMG_TRACK/IMG_CLOSE (0x30-0x34): floppy disk imaging, one
+    track per exchange. The image is held in memory (ImageJob) between OPEN and
+    CLOSE; see the command block below and README.md "Disk images".
 
 Run:
   python3 igcfs.py --root /srv/victor --dev /dev/ttyUSB0 --baud 38400 -v
 """
 
 import argparse
+import math
 import os
+import struct
 import sys
 import time
 from pathlib import Path
@@ -54,6 +59,7 @@ from v9kfiletrx import (
 from v9kfiletrx.compress import rle_decompress, compress_if_beneficial
 from v9kfiletrx.protocol import (CHUNK_SIZE, DATA_FLAG_COMPRESSED, ResendPacket,
                                  ErrorPacket, parse_packet)
+import v9kimage
 
 # --- igc protocol extension (must match igc/src/serialfs_proto.h) -------------
 # The vetted FTX command space uses 0x10-0x1F (0x1F = QUIT); 0x1A-0x1D are free.
@@ -62,6 +68,25 @@ CMD_MKDIR  = 0x1B   # payload: [cmd][path_len][path]
 CMD_RENAME = 0x1C   # payload: [cmd][old_len][old][new_len][new]
 CMD_OK     = 0x1D   # reply:   [cmd][status]  (status 0 = ok)
 CMD_QUIT   = 0x1F   # FTX_CMD_QUIT
+
+# Disk imaging (0x30 block; 0x20-0x2F is reserved for FTX tests). Linear track
+# t is 0..159 (side 0 tracks 0..79, then side 1); geometry lives in v9kimage.
+CMD_IMG_OPEN  = 0x30  # V->PC: [cmd][mode][total_sectors u16][name_len][name]
+                      #        mode 0 = create image (Victor pushes tracks),
+                      #        mode 1 = read image (Victor pulls tracks)
+CMD_IMG_INFO  = 0x31  # PC->V: [cmd][status][total_sectors u16]  reply to OPEN
+                      #        status 0 ok, 1 not found / cannot open,
+                      #        2 not a valid Victor disk image, 3 other error
+CMD_IMG_GET   = 0x32  # V->PC: [cmd][track]  -> that track's IMG_TRACK fragments
+CMD_IMG_TRACK = 0x33  # both:  [cmd][track][frag][nfrag][flags][len u16][data]
+                      #        fragment i = track bytes i*1024.., flags bit 0 = RLE.
+                      #        Mode 0: server replies CMD_OK/ERROR once per track,
+                      #        after the fragment with frag == nfrag-1.
+CMD_IMG_CLOSE = 0x34  # V->PC: [cmd][status][crc32 u32]  status 0 done, 1 abort
+                      #        reply CMD_OK / ERROR
+IMG_FRAG_SIZE = 1024
+IMG_FLAG_RLE = 0x01
+IMG_ST_OK, IMG_ST_NOT_FOUND, IMG_ST_INVALID, IMG_ST_OTHER = 0, 1, 2, 3
 
 # DOS attribute bits we surface in listings.
 ATTR_READONLY = 0x01
@@ -77,6 +102,32 @@ IDLE_TIMEOUT = 0.5      # serve-loop poll interval while no request is pending
 
 class QuitServer(Exception):
     """Raised to unwind the serve loop on a QUIT command."""
+
+
+class ImageJob:
+    """State of one disk-image transfer between IMG_OPEN and IMG_CLOSE.
+
+    The whole image lives in memory (at most 1.2 MB): mode 0 assembles it track
+    by track and writes the file only at CLOSE (which is what makes .rle output
+    a single compress call); mode 1 holds the fully decoded file so IMG_GET is
+    a plain slice."""
+
+    def __init__(self, mode, dest, name, image):
+        self.mode = mode
+        self.dest = dest            # real Path of the .img/.rle file
+        self.name = name            # name as the Victor sent it (for logs)
+        self.image = image          # bytearray (mode 0) / bytes (mode 1)
+        self.ntracks = v9kimage.track_count(len(image) // v9kimage.SECTOR_SIZE)
+        self.received = [False] * self.ntracks
+        self.t0 = time.time()
+        # Mode-0 track being assembled from fragments.
+        self.cur_track = None
+        self.cur_frags = []
+        self.cur_bad = None         # reason the current track was dropped
+
+    def track_span(self, t):
+        start = v9kimage.track_first_sector(t) * v9kimage.SECTOR_SIZE
+        return start, start + v9kimage.track_bytes(t)
 
 
 def log(msg):
@@ -201,6 +252,7 @@ class IgcFileServer:
         # uploads, whose START carries only a basename, land in the dir igc is
         # viewing. Explicit-path ops (download/delete/mkdir/rename) ignore it.
         self.cwd = ''
+        self.img_job = None   # ImageJob between IMG_OPEN and IMG_CLOSE
 
     # --- path helpers ------------------------------------------------------
 
@@ -282,6 +334,14 @@ class IgcFileServer:
             self.handle_mkdir(self._req_path(payload))
         elif cmd == CMD_RENAME:
             self.handle_rename(payload)
+        elif cmd == CMD_IMG_OPEN:
+            self.handle_img_open(payload)
+        elif cmd == CMD_IMG_GET:
+            self.handle_img_get(payload)
+        elif cmd == CMD_IMG_TRACK:
+            self.handle_img_track(payload)
+        elif cmd == CMD_IMG_CLOSE:
+            self.handle_img_close(payload)
         elif cmd == CMD_QUIT:
             raise QuitServer()
         else:
@@ -409,32 +469,36 @@ class IgcFileServer:
 
     # --- upload (Victor pushes a file to us) -------------------------------
 
+    def _resolve_upload_dest(self, name):
+        """Real destination path for a file the Victor is pushing.
+
+        A bare basename lands in the directory igc is viewing (tracked from the
+        last LIST); a path-qualified name (it contains a separator, as in
+        directory-tree copies) is resolved under root. The final 8.3 component
+        is reverse-mapped like the download path does, so writing to
+        MYDOCU~1.TXT updates 'My Documents.txt' instead of creating a second,
+        literally-named file beside it. A name with no mapping passes through
+        (a genuinely new file)."""
+        if '\\' in name or '/' in name:
+            rel = name.replace('\\', '/').strip('/')
+            parent_rel, base = (rel.rsplit('/', 1) if '/' in rel else ('', rel))
+            dest_dir = self._resolve(parent_rel)
+        else:
+            dest_dir = self._resolve(self.cwd)
+            base = name
+        base = build_dos_map(dest_dir).get(base.upper(), base)
+        dest = dest_dir / base
+        # dest_dir is sandbox-checked by _resolve, but the final component
+        # may be a symlink pointing outside the root - resolve and re-check.
+        resolved = dest.resolve()
+        if resolved != self.root and self.root not in resolved.parents:
+            raise PermissionError("path escapes root")
+        return dest
+
     def handle_upload(self, start):
-        # START carries either a bare basename - placed in the directory igc is
-        # viewing (tracked from the last LIST) - or, for directory-tree copies, a
-        # path-qualified name (it contains a separator) resolved under root. The
-        # latter lets igc push files into subdirectories without first LISTing
-        # each one; parents are auto-created by _recv_after_start.
-        name = start.filename
+        # Parents of a path-qualified name are auto-created by _recv_after_start.
         try:
-            if '\\' in name or '/' in name:
-                rel = name.replace('\\', '/').strip('/')
-                parent_rel, base = (rel.rsplit('/', 1) if '/' in rel else ('', rel))
-                dest_dir = self._resolve(parent_rel)
-            else:
-                dest_dir = self._resolve(self.cwd)
-                base = name
-            # Reverse-map the final 8.3 component like the download path does,
-            # so writing to MYDOCU~1.TXT updates 'My Documents.txt' instead of
-            # creating a second, literally-named file beside it. A name with no
-            # mapping passes through (a genuinely new file).
-            base = build_dos_map(dest_dir).get(base.upper(), base)
-            dest = dest_dir / base
-            # dest_dir is sandbox-checked by _resolve, but the final component
-            # may be a symlink pointing outside the root - resolve and re-check.
-            resolved = dest.resolve()
-            if resolved != self.root and self.root not in resolved.parents:
-                raise PermissionError("path escapes root")
+            dest = self._resolve_upload_dest(start.filename)
         except Exception as e:
             log(f"  -> putfile rejected: {e}")
             self.pkt.send_packet(ReadyPacket(status=1).pack())
@@ -508,6 +572,191 @@ class IgcFileServer:
     def _parse(data):
         from v9kfiletrx.protocol import parse_packet
         return parse_packet(data)
+
+    # --- disk images (IMG_OPEN / IMG_GET / IMG_TRACK / IMG_CLOSE) -----------
+
+    def _img_info(self, status, total_sectors=0):
+        self.pkt.send_packet(struct.pack('<BBH', CMD_IMG_INFO, status, total_sectors))
+
+    def handle_img_open(self, payload):
+        self.img_job = None  # a new OPEN discards any unfinished job
+        if len(payload) < 5 or len(payload) < 5 + payload[4]:
+            log("  <- imgopen refused: short packet")
+            self._img_info(IMG_ST_OTHER)
+            return
+        mode = payload[1]
+        total_sectors = struct.unpack_from('<H', payload, 2)[0]
+        name = payload[5:5 + payload[4]].decode('ascii', errors='replace')
+        log(f"  <- imgopen mode={mode} {name} {total_sectors} sectors")
+        status = IMG_ST_OTHER
+        try:
+            status = IMG_ST_INVALID
+            if os.path.splitext(name)[1].upper() not in ('.IMG', '.RLE') or mode not in (0, 1):
+                raise ValueError("not an .IMG/.RLE name or bad mode")
+            status = IMG_ST_NOT_FOUND
+            # Mode 0 names a new file like an upload (bare name -> the listed
+            # dir); mode 1 names an existing one like a download (path from root).
+            if mode == 0:
+                dest = self._resolve_upload_dest(name)
+            else:
+                dest = Path(*self._resolve_dir_and_name(name))
+                # The parent is sandbox-checked; the file itself may be a
+                # symlink leading outside the root (same check as uploads).
+                resolved = dest.resolve()
+                if resolved != self.root and self.root not in resolved.parents:
+                    raise PermissionError("path escapes root")
+            if mode == 0:
+                status = IMG_ST_INVALID
+                v9kimage.track_count(total_sectors)
+                image = bytearray(total_sectors * v9kimage.SECTOR_SIZE)
+            else:
+                if not dest.is_file():
+                    raise FileNotFoundError(name)
+                status = IMG_ST_INVALID
+                image = v9kimage.load_image(dest)  # .rle: header/size/CRC checked here
+                status = IMG_ST_OTHER
+            self.img_job = ImageJob(mode, dest, name, image)
+        except Exception as e:
+            log(f"  -> imgopen refused ({status}): {e}")
+            self._img_info(status)
+            return
+        sectors = len(image) // v9kimage.SECTOR_SIZE
+        self._img_info(IMG_ST_OK, sectors)
+        log(f"  -> {'creating' if mode == 0 else 'serving'} {dest.name}: "
+            f"{sectors} sectors, {self.img_job.ntracks} tracks")
+
+    def handle_img_get(self, payload):
+        job = self.img_job
+        track = payload[1] if len(payload) > 1 else -1
+        if job is None or job.mode != 1 or not 0 <= track < job.ntracks:
+            log(f"  -> imgget {track} refused (no read job or bad track)")
+            self._reply_error(Error.PROTOCOL, "bad IMG_GET")
+            return
+        start, end = job.track_span(track)
+        data = job.image[start:end]
+        nfrag = math.ceil(len(data) / IMG_FRAG_SIZE)
+        for i in range(nfrag):
+            frag, packed = compress_if_beneficial(data[i * IMG_FRAG_SIZE:(i + 1) * IMG_FRAG_SIZE])
+            self.pkt.send_packet(struct.pack('<BBBBBH', CMD_IMG_TRACK, track, i, nfrag,
+                                             IMG_FLAG_RLE if packed else 0, len(frag)) + frag,
+                                 timeout=self.ft.DATA_ACK_TIMEOUT)
+            if self.frame_gap:
+                time.sleep(self.frame_gap)
+        job.received[track] = True
+        if track % 10 == 9 or track == job.ntracks - 1:
+            log(f"  -> imgget track {track + 1}/{job.ntracks}")
+
+    def handle_img_track(self, payload):
+        """One fragment of a track the Victor is pushing (mode 0).
+
+        Only the fragment that says it is the last (frag == nfrag-1) gets a
+        reply - CMD_OK if the whole track arrived intact, else ERROR - because
+        the Victor sends a track's fragments back to back and waits for one
+        reply per track. A bad earlier fragment just poisons the track, so the
+        error surfaces at that per-track checkpoint instead of as a stray
+        packet in the middle of the Victor's send loop."""
+        job = self.img_job
+        if len(payload) < 7:
+            log("  -> imgtrack dropped: short packet")
+            self._reply_error(Error.PROTOCOL, "short IMG_TRACK")
+            return
+        track, frag, nfrag, flags, dlen = struct.unpack_from('<BBBBH', payload, 1)
+        data = payload[7:7 + dlen]
+        bad = None
+        if job is None or job.mode != 0:
+            bad = "no image being created"
+        elif not 0 <= track < job.ntracks:
+            bad = f"track {track} out of range"
+        else:
+            if frag == 0:
+                job.cur_track, job.cur_frags, job.cur_bad = track, [], None
+            tbytes = v9kimage.track_bytes(track)
+            if job.cur_bad:
+                bad = job.cur_bad
+            elif (track != job.cur_track or frag != len(job.cur_frags)
+                  or nfrag != math.ceil(tbytes / IMG_FRAG_SIZE) or len(data) != dlen):
+                bad = f"track {track} fragment {frag}/{nfrag} out of order"
+            else:
+                try:
+                    if flags & IMG_FLAG_RLE:
+                        data = rle_decompress(data)
+                except ValueError as e:
+                    data, bad = b'', f"track {track} fragment {frag}: {e}"
+                want = min(IMG_FRAG_SIZE, tbytes - frag * IMG_FRAG_SIZE)
+                if not bad and len(data) != want:
+                    bad = f"track {track} fragment {frag}: {len(data)} bytes, expected {want}"
+            if bad:
+                job.cur_bad = bad
+                if 0 <= track < job.ntracks:
+                    job.received[track] = False
+            else:
+                job.cur_frags.append(data)
+        if frag != nfrag - 1:
+            return  # more fragments of this track to come; reply at the last one
+        if bad:
+            log(f"  -> imgtrack dropped: {bad}")
+            if job is not None:
+                job.cur_track, job.cur_frags, job.cur_bad = None, [], None
+            self._reply_error(Error.PROTOCOL, bad[:60])
+            return
+        start, end = job.track_span(track)
+        job.image[start:end] = b''.join(job.cur_frags)
+        job.received[track] = True
+        job.cur_track, job.cur_frags = None, []
+        self._reply_ok()
+        if track % 10 == 9 or track == job.ntracks - 1:
+            log(f"  <- imgtrack {track + 1}/{job.ntracks}")
+
+    def handle_img_close(self, payload):
+        if len(payload) < 6:
+            self._reply_error(Error.PROTOCOL, "short IMG_CLOSE")
+            return  # the job stays open for a well-formed CLOSE
+        job, self.img_job = self.img_job, None  # the job ends here, whatever happens
+        status = payload[1]
+        crc = struct.unpack_from('<I', payload, 2)[0]
+        log(f"  <- imgclose status={status} crc={crc:08X}")
+        if job is None:
+            self._reply_error(Error.PROTOCOL, "no image open")
+            return
+        if status != 0:
+            log(f"  -> aborted, {job.name} discarded")
+            self._reply_ok()
+            return
+        image_crc = crc32(bytes(job.image))
+        if job.mode == 1:
+            if image_crc != crc:
+                log(f"  -> CRC MISMATCH: Victor {crc:08X}, image {image_crc:08X}")
+                self._reply_error(Error.CRC, "image CRC mismatch")
+            else:
+                log(f"  -> served {job.dest.name} CRC ok{_rate(len(job.image), time.time() - job.t0)}")
+                self._reply_ok()
+            return
+        missing = job.received.count(False)
+        if missing:
+            log(f"  -> {missing} tracks missing, nothing written")
+            self._reply_error(Error.PROTOCOL, f"{missing} tracks missing")
+            return
+        if image_crc != crc:
+            log(f"  -> CRC MISMATCH: Victor {crc:08X}, received {image_crc:08X}; nothing written")
+            self._reply_error(Error.CRC, "image CRC mismatch")
+            return
+        tmp_path = job.dest.with_name(job.dest.name + '.igctmp')
+        try:
+            job.dest.parent.mkdir(parents=True, exist_ok=True)
+            data = (v9kimage.img_to_rle(bytes(job.image))
+                    if job.dest.suffix.lower() == '.rle' else bytes(job.image))
+            tmp_path.write_bytes(data)
+            os.replace(tmp_path, job.dest)
+        except Exception as e:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            log(f"  -> image write failed: {e}")
+            self._reply_error(Error.FILE, str(e)[:60])
+            return
+        self._reply_ok()
+        kind = 'rle' if job.dest.suffix.lower() == '.rle' else 'img'
+        log(f"  -> wrote {job.dest.name} ({len(job.image)} bytes raw, {len(data)} bytes {kind}, "
+            f"{time.time() - job.t0:.1f} s)")
 
     # --- delete / mkdir / rename ------------------------------------------
 

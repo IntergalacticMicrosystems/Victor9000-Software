@@ -100,11 +100,63 @@ The ~N mangle numbering is recomputed from the directory's sorted contents on
 each request, so avoid adding/removing files in a served directory from the PC
 side mid-session — a mangled name could remap to a different file.
 
+## Disk images
+
+igc can read a whole Victor floppy into an image file on the server, or write
+an image file from the server onto a formatted Victor floppy (F6 More). The
+server holds the image in memory between OPEN and CLOSE and moves it one track
+per exchange. The file name's extension picks the format: `.IMG` (raw) or
+`.RLE` (compressed, below); anything else is refused. A new image (mode 0) is
+named like an upload: a bare name lands in the last-listed directory, a
+path-qualified one under root. An existing image (mode 1) is named like a
+download, by its path from root. Either way the 8.3 components are
+reverse-mapped, so `MYDISK~1.RLE` reaches a long-named file.
+
+Geometry: 80 tracks per side, 512-byte sectors, zoned (19..12 sectors on side
+0, 18..11 on side 1). Single-sided = 1224 sectors = 626,688 bytes,
+double-sided = 2391 sectors = 1,224,192 bytes; any other size is refused.
+Tracks are numbered linearly 0..159 (side 0 tracks 0..79, then side 1), and
+the `.img` is in that logical-sector order. The table lives in `v9kimage.py`.
+
+| Byte | Name | Direction | Payload |
+|------|------|-----------|---------|
+| 0x30 | `IMG_OPEN` | V->PC | `[cmd][mode][total_sectors u16][name_len][name]`. Mode 0 = create image (Victor reads its floppy, pushes tracks); mode 1 = read image (Victor pulls tracks, writes its floppy). `total_sectors` (1224 or 2391) only matters for mode 0. A new OPEN discards any unfinished job. |
+| 0x31 | `IMG_INFO` | PC->V | `[cmd][status][total_sectors u16]`, the reply to OPEN. Status 0 ok, 1 not found / cannot open, 2 not a valid Victor disk image (extension, size, `.rle` header or CRC), 3 other. `total_sectors` = the image's size for mode 1, the echoed request for mode 0, 0 on refusal. In mode 1 an `.rle` is fully decoded and checked here, before the floppy is touched. |
+| 0x32 | `IMG_GET` | V->PC | `[cmd][track]`. Mode 1: the server answers with that track's `IMG_TRACK` fragments back to back. No read job or bad track: ERROR. |
+| 0x33 | `IMG_TRACK` | both | `[cmd][track][frag][nfrag][flags][len u16][data]`. `nfrag` = ceil(track bytes / 1024); fragment `i` covers track bytes `i*1024..` (the last one of a 19-sector track is 512 bytes). Flags bit 0 = data is RLE, set only when that saved bytes. Max 1031 bytes. In mode 0 the server replies once per track, after the fragment with `frag == nfrag-1`: `CMD_OK` if every fragment arrived in order with the right decoded length, else ERROR (the track counts as not received; resending it overwrites). |
+| 0x34 | `IMG_CLOSE` | V->PC | `[cmd][status][crc32 u32]`. Status 0 = complete. Mode 0: every track must have arrived and the CRC-32 of the assembled image must match, then the file is written (temp file + rename) and `CMD_OK` is sent; otherwise ERROR and nothing is written. Mode 1: `CMD_OK` if the CRC matches the served image, ERROR (CRC) if not, which igc reports as a warning. Status 1 = abort: everything is dropped, `CMD_OK`. |
+
+### `.rle` format
+
+A 16-byte header, then the whole raw image encoded with the viclibc RLE scheme
+(escape 0x90, runs of 4..258 as `[0x90][count-3][byte]`, a literal 0x90 as
+`[0x90][0x00]`) as one continuous stream. igc writes it as independently
+compressed 1 KB slices, which is still a valid continuous stream.
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 8 | Magic `V9KRLE\x1a\x01` (last byte = format version 1) |
+| 8 | 4 | Raw image size, little-endian (626688 or 1224192) |
+| 12 | 4 | CRC-32 of the raw image, little-endian (zlib / FTX polynomial) |
+
+### `v9kimg.py`
+
+Converts and inspects images on the PC (it uses the same vendored codec):
+
+```sh
+python3 v9kimg.py info   DISK.img|DISK.rle    # sides (by size and by label), sectors, CRC, label bytes
+python3 v9kimg.py pack   DISK.img [DISK.rle]  # img -> rle (default: same name, .rle)
+python3 v9kimg.py unpack DISK.rle [DISK.img]  # rle -> img
+```
+
+The label's sidedness is bit 0 of the word at offset 32 of sector 0; `info`
+flags an image whose size and label disagree.
+
 ## Self-test (no Victor required)
 
-`selftest.py` bridges two local PTYs with `socat`, runs the server on one end and
+`selftest.py` bridges two in-process connection endpoints (a fake serial cable), runs the server on one end and
 an igc-emulating client on the other, and exercises list / upload / download /
-delete / mkdir / rename end to end:
+delete / mkdir / rename and disk-image push/pull end to end:
 
 ```sh
 .venv/bin/python selftest.py

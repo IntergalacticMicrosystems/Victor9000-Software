@@ -28,10 +28,10 @@ bool_t fops_init(void);
 /* Shutdown file operations module */
 void fops_shutdown(void);
 
-/* F5: Ask Copy/Move once (filename for a single item, "N files" for many),
- * then perform the chosen operation with no further confirmation. */
+/* F5: Ask Copy/Move/Delete/Rename once (filename for a single item, "N files"
+ * for many), then perform the chosen operation. */
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
-int fops_copy_or_move(void);
+int fops_file_op(void);
 
 /* Copy selected files to other panel */
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
@@ -41,7 +41,7 @@ int fops_copy(void);
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
 int fops_move(void);
 
-/* F6: Delete selected files */
+/* F5 > Delete: Delete selected files */
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
 int fops_delete(void);
 
@@ -49,7 +49,7 @@ int fops_delete(void);
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
 int fops_mkdir(void);
 
-/* F8: Rename file/directory */
+/* F5 > Rename: Rename file/directory */
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
 int fops_rename(void);
 

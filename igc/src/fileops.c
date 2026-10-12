@@ -669,13 +669,15 @@ static int fops_delete_serial(Panel *panel)
 }
 
 /*---------------------------------------------------------------------------
- * fops_copy_or_move - Ask Copy/Move once, then perform it
+ * fops_file_op - F5: ask Copy/Move/Delete/Rename once, then perform it
  *
  * Shows a single dialog: the filename when a single item is involved, or
  * "<N> files" when more than one file is selected (the highlighted name is
- * not shown). The chosen operation then runs with no further confirmation.
+ * not shown). Copy and move then run with no further confirmation; delete
+ * keeps its own confirmation and rename prompts for the new name (rename
+ * always acts on the cursor item).
  *---------------------------------------------------------------------------*/
-int fops_copy_or_move(void)
+int fops_file_op(void)
 {
     Panel *src = panel_get_active();
     FileEntry __far *single = (FileEntry __far *)0;
@@ -712,13 +714,13 @@ int fops_copy_or_move(void)
         str_copy_n(label, single->name, sizeof(label) - 1);
     }
 
-    op = dlg_copy_or_move(label);
-    if (op == 'C') {
-        return fops_copy();
-    } else if (op == 'M') {
-        return fops_move();
+    op = dlg_file_op(label);
+    switch (op) {
+        case 'C': return fops_copy();
+        case 'M': return fops_move();
+        case 'D': return fops_delete();
+        case 'R': return fops_rename();
     }
-
     return FOPS_CANCEL;
 }
 
@@ -776,7 +778,7 @@ int fops_copy(void)
             result = fops_copy_file(src_path, dst_path);
         }
     } else {
-        /* Copy all selected files (already confirmed by fops_copy_or_move) */
+        /* Copy all selected files (already confirmed by fops_file_op) */
         g_file_count = selected;
 
         for (i = 0; i < src_panel->files.count && result != FOPS_CANCEL; i++) {
@@ -895,7 +897,7 @@ int fops_move(void)
             }
         }
     } else {
-        /* Move all selected files (already confirmed by fops_copy_or_move) */
+        /* Move all selected files (already confirmed by fops_file_op) */
         g_file_count = selected;
 
         for (i = 0; i < src_panel->files.count && result != FOPS_CANCEL; i++) {

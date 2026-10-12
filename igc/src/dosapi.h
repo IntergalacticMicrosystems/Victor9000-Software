@@ -16,6 +16,10 @@
 /* Get current drive (0=A, 1=B, etc.) */
 uint8_t dos_get_drive(void);
 
+/* Drive the running program was loaded from (0=A), from the program path DOS
+ * 3+ stores after the environment; falls back to the current drive. */
+uint8_t dos_exe_drive(void);
+
 /* Set current drive */
 void dos_set_drive(uint8_t drive);
 
@@ -107,6 +111,10 @@ int16_t dos_write(dos_handle_t handle, const void __far *buf, uint16_t count);
 /* Get file size (via seek to end and back) */
 uint32_t dos_file_size(dos_handle_t handle);
 
+/* Seek (INT 21h AH=42h). whence: 0 = start, 1 = current, 2 = end.
+ * Returns 0 on success, -1 on error. */
+int dos_seek(dos_handle_t handle, int32_t offset, uint8_t whence);
+
 /* Get file date/time from open handle (returns 0 on success) */
 int dos_get_ftime(dos_handle_t handle, uint16_t *date, uint16_t *time);
 
@@ -127,6 +135,15 @@ int16_t dos_get_attr(const char *path);
 
 /* Set file attributes */
 int dos_set_attr(const char *path, uint8_t attr);
+
+/*---------------------------------------------------------------------------
+ * Disk Reset
+ *---------------------------------------------------------------------------*/
+
+/* Flush and invalidate all DOS disk buffers (INT 21h AH=0Dh). Used around raw
+ * INT 25h/26h track access so DOS never writes stale buffers over the new
+ * contents or serves old ones afterwards. */
+void dos_disk_reset(void);
 
 /*---------------------------------------------------------------------------
  * Disk Space

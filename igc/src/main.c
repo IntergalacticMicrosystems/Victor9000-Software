@@ -19,6 +19,7 @@
 #include "editor.h"
 #include "serialfs.h"
 #include "mouse.h"
+#include "diskimg.h"
 
 /*---------------------------------------------------------------------------
  * Forward declarations
@@ -265,16 +266,26 @@ static void handle_fkey(uint8_t fkey_num)
             }
             break;
 
-        case 5:     /* F5: Copy/Move */
-            fops_copy_or_move();
+        case 5:     /* F5: Files - copy / move / delete / rename */
+            fops_file_op();
             g_need_redraw = TRUE;
             ui_draw_fkey_bar();
             break;
 
-        case 6:     /* F6: Delete */
-            fops_delete();
-            g_need_redraw = TRUE;
-            ui_draw_fkey_bar();
+        case 6:     /* F6: More - disk images */
+            {
+                static const char * const more[2] = {
+                    "Read disk to image file", "Write image file to disk"
+                };
+                int sel = dlg_menu("More", more, 2, 0);
+                if (sel == 0) {
+                    diskimg_read_to_file();
+                } else if (sel == 1) {
+                    diskimg_write_from_file();
+                }
+                g_need_redraw = TRUE;
+                ui_draw_fkey_bar();
+            }
             break;
 
         case 7:     /* F7: Quit */
@@ -282,12 +293,6 @@ static void handle_fkey(uint8_t fkey_num)
             if (dlg_exit_confirm() == DLG_YES) {
                 g_running = FALSE;
             }
-            ui_draw_fkey_bar();
-            break;
-
-        case 8:     /* F8: Rename */
-            fops_rename();
-            g_need_redraw = TRUE;
             ui_draw_fkey_bar();
             break;
     }
@@ -473,6 +478,10 @@ int main(void)
 {
     /* Initialize memory system */
     mem_init();
+
+    /* Remember the drive IGC runs from: writing a disk image over it would
+     * pull the floppy out from under the running program. */
+    diskimg_set_exe_drive(dos_exe_drive());
 
     /* Fail critical errors (INT 24h) for the whole run on DOS 3+. Without
      * this, touching a not-ready drive (empty floppy, disk ejected mid-copy)

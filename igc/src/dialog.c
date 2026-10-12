@@ -570,9 +570,120 @@ int dlg_drive_select(uint8_t current_drive)
 }
 
 /*---------------------------------------------------------------------------
- * dlg_copy_or_move - Copy/Move dialog
+ * dlg_menu - Generic list picker
+ *
+ * Same keys and mouse rules as the drive list: Up/Down/Home/End move, Enter
+ * takes the row, Esc/F7/F10 cancel; a click selects a row, a click on the
+ * selected row (or a double-click) takes it.
  *---------------------------------------------------------------------------*/
-int dlg_copy_or_move(const char *filename)
+int dlg_menu(const char *title, const char * const *items, uint8_t count,
+             uint8_t initial)
+{
+    DialogWindow win;
+    KeyEvent key;
+    uint8_t i, w = str_len(title) + 6, selected = initial;
+
+    for (i = 0; i < count; i++) {
+        if (str_len(items[i]) + 6 > w) w = str_len(items[i]) + 6;
+    }
+    if (w < 22) w = 22;
+    if (selected >= count) selected = 0;
+
+    if (!dlg_open(&win, (80 - w) / 2, 8, w, count + 4, title)) {
+        return -1;
+    }
+
+    kbd_flush();
+
+    while (1) {
+        for (i = 0; i < count; i++) {
+            scr_puts_n_xy(win.x + 2, win.y + 1 + i, items[i], w - 4,
+                          (i == selected) ? ATTR_DIM_REV : ATTR_DIM);
+        }
+
+        key = kbd_wait();
+
+        if (key.type == KEY_MOUSE) {
+            if (key.code != MOUSE_RIGHT &&
+                g_mouse_y > win.y && g_mouse_y <= win.y + count &&
+                g_mouse_x > win.x + 1 && g_mouse_x < win.x + w - 2) {
+                i = (uint8_t)(g_mouse_y - win.y - 1);
+                if (i == selected || key.code == MOUSE_LEFT_DBL) {
+                    dlg_close(&win);
+                    return i;
+                }
+                selected = i;
+            }
+        } else if (key.type == KEY_ASCII) {
+            if (key.code == KEY_ENTER) {
+                dlg_close(&win);
+                return selected;
+            }
+            if (key.code == KEY_ESC) {
+                dlg_close(&win);
+                return -1;
+            }
+        } else if (key.type == KEY_EXTENDED) {
+            switch (key.code) {
+                case KEY_UP:
+                    if (selected > 0) selected--;
+                    break;
+                case KEY_DOWN:
+                    if (selected < count - 1) selected++;
+                    break;
+                case KEY_HOME:
+                    selected = 0;
+                    break;
+                case KEY_END:
+                    selected = count - 1;
+                    break;
+                case KEY_F7:
+                case KEY_F10:
+                    dlg_close(&win);
+                    return -1;
+            }
+        }
+    }
+}
+
+/*---------------------------------------------------------------------------
+ * dlg_floppy_select - Pick drive A: or B: (the only floppies), must be ready
+ *---------------------------------------------------------------------------*/
+int dlg_floppy_select(const char *title)
+{
+    static const char * const names[2] = { " A:", " B:" };
+    const char *items[2];
+    uint8_t drives[2];
+    uint8_t i, n = 0;
+    int sel = 0;
+
+    for (i = 0; i < 2; i++) {
+        if (dos_is_drive_valid(i)) {
+            items[n] = names[i];
+            drives[n++] = i;
+        }
+    }
+    if (n == 0) {
+        dlg_alert("Error", "No floppy drives");
+        return -1;
+    }
+
+    while (1) {
+        sel = dlg_menu(title, items, n, (uint8_t)sel);
+        if (sel < 0) {
+            return -1;
+        }
+        if (dos_is_drive_ready(drives[sel])) {
+            return drives[sel];
+        }
+        dlg_alert("Error", "Drive not ready");
+    }
+}
+
+/*---------------------------------------------------------------------------
+ * dlg_file_op - F5 file operation picker
+ *---------------------------------------------------------------------------*/
+int dlg_file_op(const char *filename)
 {
     DialogWindow win;
     KeyEvent key;
@@ -582,7 +693,7 @@ int dlg_copy_or_move(const char *filename)
     }
 
     dlg_print_center(&win, 1, filename);
-    dlg_print_center(&win, 3, "(C)opy or (M)ove?");
+    dlg_print_center(&win, 3, "(C)opy (M)ove (D)elete (R)ename");
 
     kbd_flush();
 
@@ -590,18 +701,14 @@ int dlg_copy_or_move(const char *filename)
         key = kbd_wait();
 
         if (key.type == KEY_ASCII) {
-            switch (key.code) {
-                case 'c':
-                case 'C':
-                    dlg_close(&win);
-                    return 'C';
-                case 'm':
-                case 'M':
-                    dlg_close(&win);
-                    return 'M';
-                case KEY_ESC:
-                    dlg_close(&win);
-                    return 0;
+            char c = char_upper((char)key.code);
+            if (c == 'C' || c == 'M' || c == 'D' || c == 'R') {
+                dlg_close(&win);
+                return c;
+            }
+            if (key.code == KEY_ESC) {
+                dlg_close(&win);
+                return 0;
             }
         } else if (key.type == KEY_EXTENDED) {
             if (key.code == KEY_F7 || key.code == KEY_F10) {

@@ -1,6 +1,15 @@
 # Plan: floppy disk imaging in IGC (.img / .rle)
 
-Status: proposal, not started. Written 2026-10-11.
+Status: implemented 2026-10-11 (uncommitted at the time of writing). Verified in
+MAME: SS/DS read to local `.IMG`/`.RLE`, write back from both, serial push and
+pull over MAME's PTY, ESC abort, write-protected target, short `.IMG` and
+truncated `.RLE` refused. Open points settled: the 16-byte `.rle` header is
+kept; F8 stays blank; Victor DOS 3.1 accepts a 19-sector INT 25h/26h call and
+the floppy path has no DMA, so no 64 KB buffer alignment is needed. Beyond the
+plan: a local `.RLE` is fully decoded and CRC-checked before the first track is
+written, and a serial destination that already exists in the panel listing asks
+before being overwritten. Real-hardware pass and the Windows `igcfs.exe`
+rebuild are still to do.
 
 ## Goal
 

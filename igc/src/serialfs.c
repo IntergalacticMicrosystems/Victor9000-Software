@@ -911,3 +911,184 @@ int serialfs_delete_tree(const char *remote_rel)
     sfs_walk_free();
     return rc;
 }
+
+/*---------------------------------------------------------------------------
+ * Disk image transfer (SFS_CMD_IMG_*, see serialfs_proto.h)
+ *
+ * One track per exchange, so the Victor is never in the middle of a floppy
+ * access while packets arrive: it either sends/receives one track's
+ * fragments in a tight loop or does disk I/O with nothing in flight.
+ *---------------------------------------------------------------------------*/
+static bool_t g_img_create;     /* mode of the open image job */
+
+/* Receive a reply the server may need a few seconds to produce (decoding an
+ * .RLE on OPEN, compressing and writing 1.2 MB on CLOSE). One pkt_receive
+ * times out after about a second of silence; nothing is in flight between
+ * attempts, so retrying just extends the wait. */
+static int16_t sfs_receive_slow(void)
+{
+    int16_t len;
+    uint8_t tries = 10;
+
+    do {
+        len = pkt_receive(&g_pkt, g_sfs_buf, PKT_MAX_PAYLOAD);
+    } while (len == PKT_ERR_TIMEOUT && --tries != 0);
+    return len;
+}
+
+const char *serialfs_img_open(bool_t create, const char *name,
+                              uint16_t *total_sectors)
+{
+    uint16_t len;
+
+    if (!g_connected) {
+        return "Serial server not connected";
+    }
+    if (str_len(name) >= FTX_MAX_FILENAME) {
+        return "Remote path too long";
+    }
+    g_img_create = create;
+    g_sfs_buf[0] = SFS_CMD_IMG_OPEN;
+    g_sfs_buf[1] = create ? 0 : 1;
+    g_sfs_buf[2] = (uint8_t)*total_sectors;
+    g_sfs_buf[3] = (uint8_t)(*total_sectors >> 8);
+    len = sfs_put_str(4, name);
+    if (pkt_send(&g_pkt, g_sfs_buf, len) < 0) {
+        return "Serial server not responding";
+    }
+
+    /* An igcfs without image support ignores the request (timeout) or
+     * answers something else. */
+    if (sfs_receive_slow() < 4 || g_sfs_buf[0] != SFS_CMD_IMG_INFO) {
+        return "Server does not support disk images";
+    }
+    switch (g_sfs_buf[1]) {
+        case 0:  break;
+        case 1:  return "Image file not found";
+        case 2:  return "Not a Victor disk image";
+        default: return "Server refused the image";
+    }
+    if (!create) {
+        *total_sectors = (uint16_t)g_sfs_buf[2] | ((uint16_t)g_sfs_buf[3] << 8);
+    }
+    return (const char *)0;
+}
+
+/* Mode 0: send one track as nfrag IMG_TRACK fragments, then wait for the
+ * server's per-track OK. Each 1 KB slice is compressed straight into the
+ * packet when that saves bytes, exactly like serialfs_put_named's chunks. */
+const char *serialfs_img_put_track(uint8_t track, const uint8_t __far *buf,
+                                   uint16_t len)
+{
+    uint8_t *pk = g_ftx.pkt_buf;
+    uint8_t nfrag = (uint8_t)((len + SFS_IMG_FRAG - 1) / SFS_IMG_FRAG);
+    uint8_t i;
+
+    for (i = 0; i < nfrag; i++) {
+        uint16_t off = (uint16_t)i * SFS_IMG_FRAG;
+        uint16_t slice = len - off;
+        uint16_t n;
+        uint32_t clen;
+
+        if (slice > SFS_IMG_FRAG) {
+            slice = SFS_IMG_FRAG;
+        }
+        clen = rle_compress(buf + off, slice, pk + SFS_IMG_HDR, SFS_IMG_FRAG);
+        if (clen > 0 && clen < slice) {
+            pk[4] = FTX_DATA_FLAG_COMPRESSED;
+            n = (uint16_t)clen;
+        } else {
+            pk[4] = 0;
+            n = slice;
+            mem_copy_far(pk + SFS_IMG_HDR, buf + off, slice);
+        }
+        pk[0] = SFS_CMD_IMG_TRACK;
+        pk[1] = track;
+        pk[2] = i;
+        pk[3] = nfrag;
+        pk[5] = (uint8_t)n;
+        pk[6] = (uint8_t)(n >> 8);
+        if (pkt_send(&g_pkt, pk, (uint16_t)(SFS_IMG_HDR + n)) < 0) {
+            return "Serial transfer failed";
+        }
+    }
+    return (sfs_wait_ok() == 0) ? (const char *)0 : "Server rejected the track";
+}
+
+/* Mode 1: request one track and reassemble its fragments into buf. Every
+ * header field is checked before the data is used. */
+const char *serialfs_img_get_track(uint8_t track, uint8_t __far *buf,
+                                   uint16_t len)
+{
+    uint8_t *pk = g_ftx.pkt_buf;
+    uint8_t nfrag = (uint8_t)((len + SFS_IMG_FRAG - 1) / SFS_IMG_FRAG);
+    uint8_t i;
+
+    g_sfs_buf[0] = SFS_CMD_IMG_GET;
+    g_sfs_buf[1] = track;
+    if (pkt_send(&g_pkt, g_sfs_buf, 2) < 0) {
+        return "Serial server not responding";
+    }
+
+    for (i = 0; i < nfrag; i++) {
+        uint16_t off = (uint16_t)i * SFS_IMG_FRAG;
+        uint16_t slice = len - off;
+        uint16_t n;
+        int16_t  rlen;
+        bool_t   bad = FALSE;
+
+        if (slice > SFS_IMG_FRAG) {
+            slice = SFS_IMG_FRAG;
+        }
+        rlen = pkt_receive(&g_pkt, pk, FTX_MAX_PAYLOAD);
+        if (rlen < 1) {
+            return "Serial transfer failed";
+        }
+        if (pk[0] == FTX_CMD_ERROR) {
+            return "Server could not read the image";
+        }
+        n = (uint16_t)pk[5] | ((uint16_t)pk[6] << 8);
+        if (rlen < SFS_IMG_HDR || pk[0] != SFS_CMD_IMG_TRACK ||
+            pk[1] != track || pk[2] != i || pk[3] != nfrag ||
+            (uint16_t)rlen != SFS_IMG_HDR + n) {
+            bad = TRUE;
+        } else if (pk[4] & FTX_DATA_FLAG_COMPRESSED) {
+            bad = (rle_decompress(pk + SFS_IMG_HDR, n, buf + off, slice) != slice)
+                  ? TRUE : FALSE;
+        } else if (n != slice) {
+            bad = TRUE;
+        } else {
+            mem_copy_far(buf + off, pk + SFS_IMG_HDR, n);
+        }
+        if (bad) {
+            /* The server keeps sending the track's remaining fragments;
+             * swallow them so the next request is not answered by one. */
+            while (++i < nfrag && pkt_receive(&g_pkt, pk, FTX_MAX_PAYLOAD) >= 1) {
+            }
+            return "Serial protocol error";
+        }
+    }
+    return (const char *)0;
+}
+
+/* Finish the job: status 0 + CRC when complete, status 1 to discard. */
+const char *serialfs_img_close(bool_t ok, uint32_t crc)
+{
+    g_sfs_buf[0] = SFS_CMD_IMG_CLOSE;
+    g_sfs_buf[1] = ok ? 0 : 1;
+    g_sfs_buf[2] = (uint8_t)crc;
+    g_sfs_buf[3] = (uint8_t)(crc >> 8);
+    g_sfs_buf[4] = (uint8_t)(crc >> 16);
+    g_sfs_buf[5] = (uint8_t)(crc >> 24);
+    if (pkt_send(&g_pkt, g_sfs_buf, 6) < 0) {
+        return "Serial server not responding";
+    }
+    if (sfs_receive_slow() < 1) {
+        return "Serial server not responding";
+    }
+    if (g_sfs_buf[0] != SFS_CMD_OK) {
+        return g_img_create ? "Server could not save the image"
+                            : "Image CRC mismatch";
+    }
+    return (const char *)0;
+}

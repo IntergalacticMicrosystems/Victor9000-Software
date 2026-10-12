@@ -76,4 +76,17 @@ int serialfs_rename(const char *old_rel, const char *new_rel);
  * panel's path and a filename. buf must hold at least MAX_FULL_PATH bytes. */
 void serialfs_build_rel(Panel *p, const char *name, char *buf);
 
+/* Disk image jobs (SFS_CMD_IMG_*, see serialfs_proto.h). Each returns NULL on
+ * success or a message for the user. open: create=TRUE pushes a new image
+ * named name (bare 8.3, stored in the serial panel's dir) of *total_sectors;
+ * create=FALSE reads the image at server-relative path name and sets
+ * *total_sectors. close(ok=FALSE) tells the server to discard the job. */
+const char *serialfs_img_open(bool_t create, const char *name,
+                              uint16_t *total_sectors);
+const char *serialfs_img_put_track(uint8_t track, const uint8_t __far *buf,
+                                   uint16_t len);
+const char *serialfs_img_get_track(uint8_t track, uint8_t __far *buf,
+                                   uint16_t len);
+const char *serialfs_img_close(bool_t ok, uint32_t crc);
+
 #endif /* SERIALFS_H */

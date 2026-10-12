@@ -81,6 +81,37 @@ uint8_t dos_get_drive(void)
 }
 
 /*---------------------------------------------------------------------------
+ * dos_exe_drive - Drive the running program was loaded from
+ *
+ * DOS 3+ appends the full program path after the environment's closing
+ * double NUL and a count word. Read via the PSP (INT 21h AH=62h) rather than
+ * main's argv, which would link in the C library's argv parser and heap.
+ *---------------------------------------------------------------------------*/
+uint8_t dos_exe_drive(void)
+{
+    union REGS regs;
+    const char __far *e;
+    uint16_t env, n = 0;
+
+    regs.h.ah = 0x62;           /* Get PSP segment (BX) */
+    int86(0x21, &regs, &regs);
+    env = *(uint16_t __far *)MK_FP(regs.x.bx, 0x2C);
+    if (env == 0) {
+        return dos_get_drive();
+    }
+    e = (const char __far *)MK_FP(env, 0);
+    while ((e[0] != '\0' || e[1] != '\0') && n < 32768u) {
+        e++;
+        n++;
+    }
+    e += 4;                     /* the double NUL, then the count word */
+    if (n < 32768u && e[1] == ':' && (e[0] & 0xDF) >= 'A' && (e[0] & 0xDF) <= 'Z') {
+        return (uint8_t)((e[0] & 0xDF) - 'A');
+    }
+    return dos_get_drive();
+}
+
+/*---------------------------------------------------------------------------
  * dos_set_drive - Set current drive
  *---------------------------------------------------------------------------*/
 void dos_set_drive(uint8_t drive)
@@ -469,6 +500,23 @@ uint32_t dos_file_size(dos_handle_t handle)
 }
 
 /*---------------------------------------------------------------------------
+ * dos_seek - Move the file pointer (whence 0 = start, 1 = current, 2 = end)
+ *---------------------------------------------------------------------------*/
+int dos_seek(dos_handle_t handle, int32_t offset, uint8_t whence)
+{
+    union REGS regs;
+
+    regs.h.ah = 0x42;
+    regs.h.al = whence;
+    regs.x.bx = handle;
+    regs.x.cx = (uint16_t)((uint32_t)offset >> 16);
+    regs.x.dx = (uint16_t)offset;
+    int86(0x21, &regs, &regs);
+
+    return regs.x.cflag ? -1 : 0;
+}
+
+/*---------------------------------------------------------------------------
  * dos_get_ftime - Get file date/time from open handle
  *---------------------------------------------------------------------------*/
 int dos_get_ftime(dos_handle_t handle, uint16_t *date, uint16_t *time)
@@ -610,6 +658,17 @@ int dos_set_attr(const char *path, uint8_t attr)
     int86x(0x21, &regs, &regs, &sregs);
 
     return regs.x.cflag ? -1 : 0;
+}
+
+/*---------------------------------------------------------------------------
+ * dos_disk_reset - Flush and invalidate all disk buffers (INT 21h AH=0Dh)
+ *---------------------------------------------------------------------------*/
+void dos_disk_reset(void)
+{
+    union REGS regs;
+
+    regs.h.ah = 0x0D;
+    int86(0x21, &regs, &regs);
 }
 
 /*---------------------------------------------------------------------------

@@ -72,9 +72,18 @@ int dlg_input(const char *title, const char *prompt, char *buf, uint16_t maxlen)
 #define DLG_DRIVE_SERIAL_B  101
 int dlg_drive_select(uint8_t current_drive);
 
-/* Copy/Move confirmation dialog */
-/* Returns 'C' for copy, 'M' for move, 0 for cancel */
-int dlg_copy_or_move(const char *filename);
+/* Generic list picker: items drawn one per row, initial = preselected row.
+ * Returns the chosen index, or -1 on Esc/F7/F10. */
+int dlg_menu(const char *title, const char * const *items, uint8_t count,
+             uint8_t initial);
+
+/* Floppy picker (A: / B: only, whichever exist). Refuses a drive that is not
+ * ready. Returns 0 (A:), 1 (B:) or -1 if cancelled. */
+int dlg_floppy_select(const char *title);
+
+/* F5 file operation dialog */
+/* Returns 'C' copy, 'M' move, 'D' delete, 'R' rename, 0 for cancel */
+int dlg_file_op(const char *filename);
 
 /* Delete confirmation dialog */
 /* Returns DLG_YES or DLG_NO */

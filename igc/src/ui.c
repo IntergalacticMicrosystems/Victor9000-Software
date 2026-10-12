@@ -187,13 +187,15 @@ void ui_draw_headers(void)
 }
 
 /*---------------------------------------------------------------------------
- * ui_draw_fkey_bar - Draw F-key bar (F1-F8: dim number, 8-char label)
+ * ui_draw_fkey_bar - Draw F-key bar (F1-F7: dim number, 8-char label)
+ *
+ * F8 is unassigned: its slot stays the dim-filled blank row.
  *---------------------------------------------------------------------------*/
 void ui_draw_fkey_bar(void)
 {
-    static const char *labels[8] = {
+    static const char *labels[7] = {
         "Drive   ", "Mkdir   ", "View    ", "Edit    ",
-        "CpyMov  ", "Delete  ", "Quit    ", "Rename  "
+        "Files   ", "More    ", "Quit    "
     };
     uint8_t i;
     uint8_t x;
@@ -201,7 +203,7 @@ void ui_draw_fkey_bar(void)
     /* Clear row with dim attribute */
     scr_fill_rect(0, ROW_FKEYS, 80, 1, ' ', ATTR_DIM);
 
-    for (i = 0; i < 8; i++) {
+    for (i = 0; i < 7; i++) {
         x = i * 10;
         scr_putc_xy(x, ROW_FKEYS, '1' + i, ATTR_DIM);
         scr_puts_xy(x + 1, ROW_FKEYS, labels[i], ATTR_DIM_REV);

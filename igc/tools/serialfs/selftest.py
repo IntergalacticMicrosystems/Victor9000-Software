@@ -7,10 +7,12 @@ IgcFileServer on one end, and drives it from the other with a client that
 emulates igc's *stock* Victor-side FTX byte sequences (ftx_send_file /
 ftx_receive_file / ftx_list_dir + the delete/mkdir/rename extension). Exercises
 the full packet + FTX + dispatch path: RESET, list (incl. 8.3 mangling), upload,
-download, delete, mkdir, rename.
+download, delete, mkdir, rename, and the disk-image job (IMG_OPEN..IMG_CLOSE).
 """
 
+import math
 import os
+import random
 import struct
 import tempfile
 import threading
@@ -26,6 +28,9 @@ from v9kfiletrx.protocol import CHUNK_SIZE, DATA_FLAG_COMPRESSED, parse_packet
 from v9kfiletrx.compress import compress_if_beneficial, rle_decompress
 import igcfs
 from igcfs import IgcFileServer, CMD_DELETE, CMD_MKDIR, CMD_RENAME, CMD_OK, CMD_QUIT
+from igcfs import (CMD_IMG_OPEN, CMD_IMG_INFO, CMD_IMG_GET, CMD_IMG_TRACK,
+                   CMD_IMG_CLOSE, IMG_FRAG_SIZE, IMG_FLAG_RLE)
+import v9kimage
 
 
 class BridgedConnection(Connection):
@@ -145,6 +150,93 @@ def igc_simple(pkt, payload):
 def _p(path):
     b = path.encode('ascii')
     return bytes([len(b)]) + b
+
+
+# --- disk images (Victor-side byte sequences of the IMG_* mini-protocol) -----
+
+def igc_img_open(pkt, mode, name, total_sectors=0):
+    """IMG_OPEN -> IMG_INFO; returns (status, total_sectors)."""
+    n = name.encode('ascii')
+    pkt.send_packet(struct.pack('<BBHB', CMD_IMG_OPEN, mode, total_sectors, len(n)) + n)
+    reply = pkt.receive_packet(timeout=5)
+    assert reply[0] == CMD_IMG_INFO, f"expected IMG_INFO, got 0x{reply[0]:02X}"
+    return reply[1], struct.unpack_from('<H', reply, 2)[0]
+
+
+def igc_img_close(pkt, status, crc):
+    """IMG_CLOSE -> True on CMD_OK, False on ERROR."""
+    pkt.send_packet(struct.pack('<BBI', CMD_IMG_CLOSE, status, crc))
+    reply = pkt.receive_packet(timeout=10)
+    return reply[0] == CMD_OK
+
+
+def igc_img_send_track(pkt, img, t, stats=None):
+    """Push one track as fragments, like serialfs_img_put_track: each 1 KB slice
+    compressed and flagged only when that saves bytes. Returns the reply byte."""
+    start = v9kimage.track_first_sector(t) * v9kimage.SECTOR_SIZE
+    data = img[start:start + v9kimage.track_bytes(t)]
+    nfrag = math.ceil(len(data) / IMG_FRAG_SIZE)
+    for i in range(nfrag):
+        frag, packed = compress_if_beneficial(data[i * IMG_FRAG_SIZE:(i + 1) * IMG_FRAG_SIZE])
+        if stats is not None:
+            stats['rle' if packed else 'raw'] = stats.get('rle' if packed else 'raw', 0) + 1
+        pkt.send_packet(struct.pack('<BBBBBH', CMD_IMG_TRACK, t, i, nfrag,
+                                    IMG_FLAG_RLE if packed else 0, len(frag)) + frag, timeout=5)
+    return pkt.receive_packet(timeout=5)[0]
+
+
+def igc_img_push(pkt, name, img, stats=None):
+    """Emulate 'Read disk to image file' to the server: OPEN mode 0, every
+    track with a per-track CMD_OK checkpoint, CLOSE with the image CRC."""
+    sectors = len(img) // v9kimage.SECTOR_SIZE
+    status, echo = igc_img_open(pkt, 0, name, sectors)
+    assert status == 0 and echo == sectors, f"IMG_OPEN refused: {status}"
+    for t in range(v9kimage.track_count(sectors)):
+        assert igc_img_send_track(pkt, img, t, stats) == CMD_OK, f"track {t} not acknowledged"
+    assert igc_img_close(pkt, 0, crc32(img)), "IMG_CLOSE not acknowledged"
+
+
+def igc_img_pull(pkt, name, stats=None):
+    """Emulate 'Write image file to disk' from the server: OPEN mode 1, IMG_GET
+    and reassemble each track, CLOSE with the CRC; returns the image bytes."""
+    status, sectors = igc_img_open(pkt, 1, name)
+    assert status == 0, f"IMG_OPEN refused: {status}"
+    out = bytearray()
+    for t in range(v9kimage.track_count(sectors)):
+        tbytes = v9kimage.track_bytes(t)
+        nfrag = math.ceil(tbytes / IMG_FRAG_SIZE)
+        pkt.send_packet(bytes([CMD_IMG_GET, t]))
+        for i in range(nfrag):
+            p = pkt.receive_packet(timeout=5)
+            cmd, trk, frag, nf, flags, dlen = struct.unpack_from('<BBBBBH', p)
+            assert (cmd, trk, frag, nf) == (CMD_IMG_TRACK, t, i, nfrag), "bad fragment header"
+            data = p[7:7 + dlen]
+            assert len(data) == dlen
+            packed = bool(flags & IMG_FLAG_RLE)
+            if stats is not None:
+                stats['rle' if packed else 'raw'] = stats.get('rle' if packed else 'raw', 0) + 1
+            data = rle_decompress(data) if packed else data
+            assert len(data) == min(IMG_FRAG_SIZE, tbytes - i * IMG_FRAG_SIZE), "bad fragment length"
+            out.extend(data)
+    assert len(out) == sectors * v9kimage.SECTOR_SIZE
+    assert igc_img_close(pkt, 0, crc32(bytes(out))), "IMG_CLOSE CRC not confirmed"
+    return bytes(out)
+
+
+def make_test_image(sectors, double_sided):
+    """Synthetic disk: a label whose sidedness bit matches, then a mix of long
+    runs (compressible fragments) and random bytes (raw fragments)."""
+    rnd = random.Random(sectors)
+    img = bytearray()
+    while len(img) < sectors * v9kimage.SECTOR_SIZE:
+        if rnd.random() < 0.5:
+            img += bytes([rnd.randrange(256)]) * rnd.randrange(100, 5000)
+        else:
+            img += rnd.randbytes(rnd.randrange(100, 5000))
+    img = img[:sectors * v9kimage.SECTOR_SIZE]
+    img[0:32] = b'\xff' + bytes(31)
+    img[32:34] = struct.pack('<H', 1 if double_sided else 0)
+    return bytes(img)
 
 
 def main():
@@ -299,6 +391,114 @@ def main():
         # --- sandbox escape rejected ---
         ok, _ = igc_simple(pkt, bytes([CMD_DELETE]) + _p('..\\..\\etc\\passwd'))
         check("sandbox escape rejected", not ok)
+
+        # --- disk images: push (Victor reads its floppy into a file here) ---
+        ss = make_test_image(v9kimage.SECTORS_SS, False)
+        ds = make_test_image(v9kimage.SECTORS_DS, True)
+        igc_list(pkt, '')
+        st = {}
+        igc_img_push(pkt, 'PUSHED.IMG', ss, stats=st)
+        check("img push SS .IMG stored", (rootp / 'PUSHED.IMG').read_bytes() == ss)
+        check("img push used raw and RLE fragments",
+              st.get('raw', 0) >= 1 and st.get('rle', 0) >= 1)
+        igc_img_push(pkt, 'PUSHED.RLE', ss)
+        rle = (rootp / 'PUSHED.RLE').read_bytes()
+        check("img push SS .RLE decodes", v9kimage.rle_to_img(rle) == ss)
+        check("img push .RLE header size/CRC",
+              v9kimage.unpack_rle_header(rle) == (len(ss), crc32(ss)))
+        igc_img_push(pkt, 'PUSHDS.IMG', ds)
+        got = (rootp / 'PUSHDS.IMG').read_bytes()
+        check("img push DS .IMG stored", len(got) == 1224192 and got == ds)
+
+        # --- disk images: pull (Victor writes a floppy from a file here) ---
+        st = {}
+        check("img pull .RLE matches", igc_img_pull(pkt, 'PUSHED.RLE', stats=st) == ss)
+        check("img pull used raw and RLE fragments",
+              st.get('raw', 0) >= 1 and st.get('rle', 0) >= 1)
+        check("img pull .IMG matches", igc_img_pull(pkt, 'PUSHED.IMG') == ss)
+        check("img pull DS .IMG matches", igc_img_pull(pkt, 'PUSHDS.IMG') == ds)
+        # The Victor writes .rle files as independently compressed 1 KB slices;
+        # that concatenation must load like a one-shot stream.
+        sliced = v9kimage.pack_rle_header(len(ss), crc32(ss)) + b''.join(
+            v9kimage.rle_compress(ss[i:i + 1024]) for i in range(0, len(ss), 1024))
+        (rootp / 'SLICED.RLE').write_bytes(sliced)
+        check("img pull Victor-style sliced .RLE", igc_img_pull(pkt, 'SLICED.RLE') == ss)
+
+        # --- disk images: error paths ---
+        check("img open bad extension refused", igc_img_open(pkt, 0, 'DISK.TXT', 1224)[0] != 0)
+        check("img open bad sector count refused", igc_img_open(pkt, 0, 'DISK.IMG', 1000)[0] == 2)
+        check("img open missing file -> 1", igc_img_open(pkt, 1, 'NOPE.IMG') == (1, 0))
+        (rootp / 'FOO.IMG').write_bytes(b'\0' * 1000)
+        check("img open wrong size -> 2", igc_img_open(pkt, 1, 'FOO.IMG') == (2, 0))
+        bad = bytearray(rle)
+        bad[-1] ^= 0xFF
+        (rootp / 'BADCRC.RLE').write_bytes(bytes(bad))
+        check("img open corrupt .RLE -> 2", igc_img_open(pkt, 1, 'BADCRC.RLE')[0] == 2)
+        pkt.send_packet(bytes([CMD_IMG_GET, 0]))
+        check("img get without open job -> ERROR",
+              pkt.receive_packet(timeout=5)[0] == Command.ERROR)
+
+        assert igc_img_open(pkt, 0, 'WRONGCRC.IMG', v9kimage.SECTORS_SS)[0] == 0
+        for trk in range(80):
+            igc_img_send_track(pkt, ss, trk)
+        check("img close wrong CRC -> ERROR", not igc_img_close(pkt, 0, crc32(ss) ^ 1))
+        check("img close wrong CRC writes nothing",
+              not (rootp / 'WRONGCRC.IMG').exists() and not list(rootp.glob('*.igctmp')))
+
+        assert igc_img_open(pkt, 0, 'SHORT.IMG', v9kimage.SECTORS_SS)[0] == 0
+        for trk in range(79):
+            igc_img_send_track(pkt, ss, trk)
+        check("img close with tracks missing -> ERROR", not igc_img_close(pkt, 0, crc32(ss)))
+        check("img close with tracks missing writes nothing", not (rootp / 'SHORT.IMG').exists())
+
+        assert igc_img_open(pkt, 0, 'ABORTED.IMG', v9kimage.SECTORS_SS)[0] == 0
+        igc_img_send_track(pkt, ss, 0)
+        # A fragment out of order (frag 1 before frag 0) poisons its track; the
+        # error is reported once, after the track's last fragment.
+        tb = v9kimage.track_bytes(1)
+        nf = math.ceil(tb / 1024)
+        for i in [1, 0] + list(range(2, nf)):
+            seg = ss[tb + i * 1024:tb + min((i + 1) * 1024, tb)]
+            pkt.send_packet(struct.pack('<BBBBBH', CMD_IMG_TRACK, 1, i,
+                                        nf, 0, len(seg)) + seg, timeout=5)
+        check("img out-of-order fragment -> ERROR at track end",
+              pkt.receive_packet(timeout=5)[0] == Command.ERROR)
+        check("img track resent after error -> OK", igc_img_send_track(pkt, ss, 1) == CMD_OK)
+        check("img abort -> OK", igc_img_close(pkt, 1, 0))
+        check("img abort writes nothing", not (rootp / 'ABORTED.IMG').exists())
+        check("img close with no job -> ERROR", not igc_img_close(pkt, 0, 0))
+
+        igc_list(pkt, 'TREE')  # cwd elsewhere: a path-qualified name ignores it
+        igc_img_push(pkt, 'SUB\\DEEP.IMG', ss)
+        check("img path-qualified name lands under root/SUB",
+              (rootp / 'SUB' / 'DEEP.IMG').read_bytes() == ss)
+        # Mode 1 names are root-relative, like downloads, whatever was listed last.
+        check("img pull root file while cwd elsewhere", igc_img_pull(pkt, 'PUSHED.RLE') == ss)
+        check("img pull path-qualified name", igc_img_pull(pkt, 'SUB\\DEEP.IMG') == ss)
+
+        # --- the image job state must not disturb ordinary requests ---
+        check("list after image tests", 'PUSHED.IMG' in {e['name'] for e in igc_list(pkt, '')})
+        check("download after image tests", igc_download(pkt, 'HELLO.TXT') == b'hello victor\r\n')
+
+        # --- malformed image packets get a reply and do not wedge the job ---
+        pkt.send_packet(bytes([CMD_IMG_OPEN, 0, 0, 0]))
+        r = pkt.receive_packet(timeout=5)
+        check("short IMG_OPEN -> IMG_INFO refused", r[0] == CMD_IMG_INFO and r[1] != 0)
+        igc_list(pkt, '')
+        n = b'SHORTCL.IMG'
+        pkt.send_packet(struct.pack('<BBHB', CMD_IMG_OPEN, 0, 1224, len(n)) + n)
+        r = pkt.receive_packet(timeout=5)
+        check("open for the short-CLOSE test", r[0] == CMD_IMG_INFO and r[1] == 0)
+        pkt.send_packet(bytes([CMD_IMG_TRACK, 0, 0]))
+        r = pkt.receive_packet(timeout=5)
+        check("short IMG_TRACK -> ERROR", r[0] == Command.ERROR)
+        pkt.send_packet(bytes([CMD_IMG_CLOSE, 0]))
+        r = pkt.receive_packet(timeout=5)
+        check("short IMG_CLOSE -> ERROR", r[0] == Command.ERROR)
+        pkt.send_packet(struct.pack('<BBI', CMD_IMG_CLOSE, 1, 0))
+        r = pkt.receive_packet(timeout=5)
+        check("job survives a short CLOSE: abort -> OK", r[0] == CMD_OK)
+        check("short-CLOSE test wrote nothing", not (rootp / 'SHORTCL.IMG').exists())
 
         # --- QUIT ---
         pkt.send_packet(bytes([CMD_QUIT]))

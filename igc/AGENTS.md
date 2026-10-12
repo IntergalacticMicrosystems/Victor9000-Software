@@ -53,8 +53,9 @@ Uses far pointers (`__far`) for data larger than 64KB. Memory tier detection at 
 | `fileops.c/h` | Copy, move, delete, mkdir, rename (local + serial, incl. recursive directory trees) |
 | `editor.c/h` | Text viewer (F3) and editor (F4) |
 | `util.c/h` | String/path utilities |
-| `serialfs.c/h` | Serial file-server backend (igcfs over viclibc) on Serial A or B; file + directory-tree transfer, list, delete, mkdir, rename |
+| `serialfs.c/h` | Serial file-server backend (igcfs over viclibc) on Serial A or B; file + directory-tree transfer, list, delete, mkdir, rename, disk-image track exchange |
 | `serialfs_proto.h` | igc↔igcfs protocol extension command bytes |
+| `diskimg.c/h` | F6 disk images: zone tables, INT 25h/26h track I/O, local `.IMG`/`.RLE` files (streaming RLE decoder), the read/write flows; image source/destination is a small `ImgIO` function-pointer struct (local here, serial in `serialfs.c`) |
 
 ## Key Data Structures
 
@@ -163,7 +164,7 @@ INT 33h driver and IGC runs unchanged without one. Rules that keep it simple:
 - Input loops that do not understand `KEY_MOUSE` just ignore it (they switch
   on `KEY_ASCII` / `KEY_EXTENDED`). Loops that do: `handle_mouse()` in main.c
   (panels, title bar, F-key bar), `dlg_confirm`, `dlg_input`,
-  `dlg_drive_select` (button/row hit tests against the same coordinates the
+  `dlg_drive_select`, `dlg_menu` (button/row hit tests against the same coordinates the
   draw code uses), and `mouse_to_key()` in editor.c (text click, help bar).
 - Positions: the driver reports pixels on an 800x400 grid; text cells are
   10x16, so cell = x/10, y/16.
@@ -196,6 +197,26 @@ INT 33h driver and IGC runs unchanged without one. Rules that keep it simple:
 - Polling uses DOS calls that run INT 23h on Ctrl-C, so main.c installs a
   do-nothing INT 23h handler at startup. Without it Ctrl-C would exit IGC
   mid-screen with the pointer still live.
+
+### Disk Images (diskimg.c)
+Tracks are moved with one INT 25h (read) / INT 26h (write) per track: AL =
+drive, CX = sector count, DX = first logical sector, DS:BX = buffer. These
+return with RETF and leave the caller's FLAGS word on the stack, and may
+clobber all non-segment registers, so they cannot go through `int86x()`.
+`abs_read` / `abs_write` are `#pragma aux` inline bodies: save BP/SI/DI/DS,
+`push es / pop ds` (the compact model's far buffer), `int 25h`, then `pop` the
+leftover flags word (POP keeps the INT's carry; `popf` or `add sp,2` would
+lose it), restore, `sbb dx,dx` -> DX:AX = error flag : DOS code (AL = driver
+status / INT 24h code, 0 = write-protect). `dos_disk_reset()` (AH=0Dh) runs
+before each operation and after a write. Geometry: two 8-zone run tables,
+linear track 0..159 (side 1 = 80..159), image in DOS logical-sector order;
+sidedness = bit 0 of the word at offset 32 of sector 0.
+
+Serial images use protocol bytes 0x30-0x34 (`IMG_OPEN`, `IMG_INFO`,
+`IMG_GET`, `IMG_TRACK`, `IMG_CLOSE`; full table in `serialfs_proto.h`), one
+track per exchange in 1 KB fragments. **igcfs must be updated together with
+igc**: an older igcfs ignores these commands and igc reports "Server does not
+support disk images".
 
 ### Dialog Overlay Pattern
 `dlg_open()` saves the background and draws the frame; `dlg_close()`
