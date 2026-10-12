@@ -579,8 +579,11 @@ void diskimg_read_to_file(void)
         return;
     }
 
-    str_copy(name, "DISK.IMG");
-    if (dlg_input("Disk image", "File name:", name, 13) != DLG_OK || name[0] == '\0') {
+    /* Prompt line names the destination; the file name goes below it. */
+    str_copy(msg, "To ");
+    ui_panel_path(p, msg + 3);
+    str_copy(name, "DISK.RLE");
+    if (dlg_input("Copy disk", msg, name, 13) != DLG_OK || name[0] == '\0') {
         return;
     }
     str_upper(name);

@@ -48,8 +48,8 @@
 | F2 | Create directory |
 | F3 | View file (read-only) |
 | F4 | Edit file |
-| F5 | Files: (C)opy, (M)ove, (D)elete or (R)ename |
-| F6 | More: disk images (read disk to image file, write image file to disk) |
+| F5 | File Ops: (C)opy, (M)ove, (D)elete or (R)ename |
+| F6 | More: disk images (copy disk to image file, write disk from image file) |
 | F7 | Quit (F10 also quits) |
 | F8 | (unassigned) |
 
@@ -146,13 +146,14 @@ a time through DOS (INT 25h / 26h). Only drives A: and B: are offered.
   scheme) behind a 16-byte header holding the raw size and a CRC-32. Mostly
   empty disks shrink a lot.
 
-**Read disk to image file:** pick the floppy, type a file name (default
-`DISK.IMG`; the extension `.IMG` or `.RLE` picks the format). The image is
-written to the active pane's directory — a local drive or the serial server
-(an existing file of that name asks before being overwritten). Sidedness comes
+**Copy disk to image file:** pick the floppy, then type a file name (default
+`DISK.RLE`; the extension `.IMG` or `.RLE` picks the format). The prompt
+shows the destination above the name: the active pane's directory, on a local
+drive or the serial server (an existing file of that name asks before being
+overwritten). Sidedness comes
 from the disk label. Esc between tracks aborts and deletes the partial image.
 
-**Write image file to disk:** put the cursor on a `.IMG` / `.RLE` file in the
+**Write disk from image file:** put the cursor on a `.IMG` / `.RLE` file in the
 active pane (local or serial), press F6, choose the target floppy and confirm.
 The target must already be a **formatted Victor disk of the same sidedness**
 (the Victor's GCR format cannot be laid down through DOS); everything on it is

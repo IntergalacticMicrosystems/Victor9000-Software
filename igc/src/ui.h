@@ -44,6 +44,9 @@ void ui_update_cursor(uint16_t old_cursor, uint16_t old_top);
 /* Draw panel path in title bar */
 void ui_draw_panel_path(Panel *p, uint8_t x_offset, bool_t active);
 
+/* Display form of a panel's location ("B:\DIR", "SERA:\DIR"), <= 23 chars */
+void ui_panel_path(const Panel *p, char *buf);
+
 /*---------------------------------------------------------------------------
  * Status Display
  *---------------------------------------------------------------------------*/

@@ -76,6 +76,32 @@ void ui_draw_frame(void)
 }
 
 /*---------------------------------------------------------------------------
+ * ui_panel_path - Display form of a panel's location, at most 23 chars
+ *
+ * A serial panel shows the link ("SERA:\path" or "SERB:\path") rather than
+ * a drive letter.
+ *---------------------------------------------------------------------------*/
+void ui_panel_path(const Panel *p, char *buf)
+{
+    const char *path = (p->path[0] == '\\') ? &p->path[1] : p->path;
+
+    if (p->backend == PANEL_SERIAL) {
+        buf[0] = 'S';
+        buf[1] = 'E';
+        buf[2] = 'R';
+        buf[3] = 'A' + serialfs_port();
+        buf[4] = ':';
+        buf[5] = '\\';
+        str_copy_n(&buf[6], path, 17);
+    } else {
+        buf[0] = 'A' + p->drive;
+        buf[1] = ':';
+        buf[2] = '\\';
+        str_copy_n(&buf[3], path, 20);
+    }
+}
+
+/*---------------------------------------------------------------------------
  * ui_draw_panel_path - Draw panel path in title bar
  *---------------------------------------------------------------------------*/
 void ui_draw_panel_path(Panel *p, uint8_t x_offset, bool_t active)
@@ -104,31 +130,7 @@ void ui_draw_panel_path(Panel *p, uint8_t x_offset, bool_t active)
     /* Fill title area with horizontal lines */
     scr_hline(start_col, ROW_TITLE, end_col - start_col + 1, BOX_HORIZ, ATTR_DIM);
 
-    /* Build path string. A serial panel shows the link ("SERA:\path" or
-       "SERB:\path") rather than a drive letter, and has no DOS free-space
-       figure. */
-    if (p->backend == PANEL_SERIAL) {
-        buf[0] = 'S';
-        buf[1] = 'E';
-        buf[2] = 'R';
-        buf[3] = 'A' + serialfs_port();
-        buf[4] = ':';
-        buf[5] = '\\';
-        if (p->path[0] == '\\') {
-            str_copy_n(&buf[6], &p->path[1], 17);
-        } else {
-            str_copy_n(&buf[6], p->path, 17);
-        }
-    } else {
-        buf[0] = 'A' + p->drive;
-        buf[1] = ':';
-        buf[2] = '\\';
-        if (p->path[0] == '\\') {
-            str_copy_n(&buf[3], &p->path[1], 20);
-        } else {
-            str_copy_n(&buf[3], p->path, 20);
-        }
-    }
+    ui_panel_path(p, buf);
     path_len = str_len(buf);
 
     /* Draw path (one position after the border/separator) */
@@ -195,7 +197,7 @@ void ui_draw_fkey_bar(void)
 {
     static const char *labels[7] = {
         "Drive   ", "Mkdir   ", "View    ", "Edit    ",
-        "Files   ", "More    ", "Quit    "
+        "File Ops", "More    ", "Quit    "
     };
     uint8_t i;
     uint8_t x;

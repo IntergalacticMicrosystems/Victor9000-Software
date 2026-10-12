@@ -275,7 +275,7 @@ static void handle_fkey(uint8_t fkey_num)
         case 6:     /* F6: More - disk images */
             {
                 static const char * const more[2] = {
-                    "Read disk to image file", "Write image file to disk"
+                    "Copy disk to image file", "Write disk from image file"
                 };
                 int sel = dlg_menu("More", more, 2, 0);
                 if (sel == 0) {
