@@ -37,9 +37,12 @@
  *  0x31 IMG_INFO   PC->V  [cmd][status][total_sectors u16]   reply to OPEN
  *                         status 0 ok, 1 not found, 2 not a Victor disk image,
  *                         3 other. Mode 1: total_sectors = the image's size.
- *  0x32 IMG_GET    V->PC  [cmd][track]   mode 1; the server answers with the
- *                         track's IMG_TRACK fragments back to back, or
- *                         FTX_CMD_ERROR.
+ *  0x32 IMG_GET    V->PC  [cmd][track][frag]   mode 1; the server answers
+ *                         with that one IMG_TRACK fragment, or FTX_CMD_ERROR.
+ *                         One fragment per request keeps the wire idle while
+ *                         the Victor decodes (its RX FIFO is 3 bytes). An
+ *                         igcfs also accepts the older [cmd][track] and then
+ *                         sends the whole track's fragments back to back.
  *  0x33 IMG_TRACK  both   [cmd][track][frag][nfrag][flags][len u16][data]
  *                         nfrag = ceil(track_bytes / 1024); fragment i covers
  *                         track bytes i*1024 .. min((i+1)*1024, track_bytes).

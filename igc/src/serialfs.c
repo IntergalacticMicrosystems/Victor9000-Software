@@ -921,17 +921,17 @@ int serialfs_delete_tree(const char *remote_rel)
  *---------------------------------------------------------------------------*/
 static bool_t g_img_create;     /* mode of the open image job */
 
-/* Receive a reply the server may need a few seconds to produce (decoding an
- * .RLE on OPEN, compressing and writing 1.2 MB on CLOSE). One pkt_receive
- * times out after about a second of silence; nothing is in flight between
- * attempts, so retrying just extends the wait. */
-static int16_t sfs_receive_slow(void)
+/* Receive a reply that may be slow to arrive: the server needs a few seconds
+ * to decode an .RLE on OPEN or to compress and write 1.2 MB on CLOSE, and a
+ * fragment the server believes it sent is only retransmitted after its 8 s
+ * ACK timeout. One pkt_receive gives up after about a second of silence;
+ * nothing is in flight between attempts, so retrying just extends the wait. */
+static int16_t sfs_receive_slow(uint8_t *buf, uint16_t maxlen, uint8_t tries)
 {
     int16_t len;
-    uint8_t tries = 10;
 
     do {
-        len = pkt_receive(&g_pkt, g_sfs_buf, PKT_MAX_PAYLOAD);
+        len = pkt_receive(&g_pkt, buf, maxlen);
     } while (len == PKT_ERR_TIMEOUT && --tries != 0);
     return len;
 }
@@ -959,7 +959,8 @@ const char *serialfs_img_open(bool_t create, const char *name,
 
     /* An igcfs without image support ignores the request (timeout) or
      * answers something else. */
-    if (sfs_receive_slow() < 4 || g_sfs_buf[0] != SFS_CMD_IMG_INFO) {
+    if (sfs_receive_slow(g_sfs_buf, PKT_MAX_PAYLOAD, 10) < 4 ||
+        g_sfs_buf[0] != SFS_CMD_IMG_INFO) {
         return "Server does not support disk images";
     }
     switch (g_sfs_buf[1]) {
@@ -1015,20 +1016,17 @@ const char *serialfs_img_put_track(uint8_t track, const uint8_t __far *buf,
     return (sfs_wait_ok() == 0) ? (const char *)0 : "Server rejected the track";
 }
 
-/* Mode 1: request one track and reassemble its fragments into buf. Every
- * header field is checked before the data is used. */
+/* Mode 1: fetch one track into buf, one IMG_GET per fragment. The packet
+ * layer ACKs a fragment before we decode it, and the 3-byte RX FIFO overruns
+ * if the server streams the next one meanwhile, so the next fragment is only
+ * requested once this one is in buf. Every header field is checked before
+ * the data is used. */
 const char *serialfs_img_get_track(uint8_t track, uint8_t __far *buf,
                                    uint16_t len)
 {
     uint8_t *pk = g_ftx.pkt_buf;
     uint8_t nfrag = (uint8_t)((len + SFS_IMG_FRAG - 1) / SFS_IMG_FRAG);
     uint8_t i;
-
-    g_sfs_buf[0] = SFS_CMD_IMG_GET;
-    g_sfs_buf[1] = track;
-    if (pkt_send(&g_pkt, g_sfs_buf, 2) < 0) {
-        return "Serial server not responding";
-    }
 
     for (i = 0; i < nfrag; i++) {
         uint16_t off = (uint16_t)i * SFS_IMG_FRAG;
@@ -1040,7 +1038,13 @@ const char *serialfs_img_get_track(uint8_t track, uint8_t __far *buf,
         if (slice > SFS_IMG_FRAG) {
             slice = SFS_IMG_FRAG;
         }
-        rlen = pkt_receive(&g_pkt, pk, FTX_MAX_PAYLOAD);
+        g_sfs_buf[0] = SFS_CMD_IMG_GET;
+        g_sfs_buf[1] = track;
+        g_sfs_buf[2] = i;
+        if (pkt_send(&g_pkt, g_sfs_buf, 3) < 0) {
+            return "Serial server not responding";
+        }
+        rlen = sfs_receive_slow(pk, FTX_MAX_PAYLOAD, 20);   /* > PC's 8 s resend */
         if (rlen < 1) {
             return "Serial transfer failed";
         }
@@ -1061,10 +1065,6 @@ const char *serialfs_img_get_track(uint8_t track, uint8_t __far *buf,
             mem_copy_far(buf + off, pk + SFS_IMG_HDR, n);
         }
         if (bad) {
-            /* The server keeps sending the track's remaining fragments;
-             * swallow them so the next request is not answered by one. */
-            while (++i < nfrag && pkt_receive(&g_pkt, pk, FTX_MAX_PAYLOAD) >= 1) {
-            }
             return "Serial protocol error";
         }
     }
@@ -1083,7 +1083,7 @@ const char *serialfs_img_close(bool_t ok, uint32_t crc)
     if (pkt_send(&g_pkt, g_sfs_buf, 6) < 0) {
         return "Serial server not responding";
     }
-    if (sfs_receive_slow() < 1) {
+    if (sfs_receive_slow(g_sfs_buf, PKT_MAX_PAYLOAD, 10) < 1) {
         return "Serial server not responding";
     }
     if (g_sfs_buf[0] != SFS_CMD_OK) {

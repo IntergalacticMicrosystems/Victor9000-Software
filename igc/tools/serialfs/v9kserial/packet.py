@@ -110,6 +110,9 @@ class PacketProtocol:
         self._last_error: Optional[str] = None
         self._seq_tx = 0  # Sequence bit for next DATA packet we send
         self._seq_rx = 0  # Sequence bit we expect on the next fresh DATA packet
+        # Fresh DATA the peer sent while we were waiting for an ACK (see
+        # send_packet); receive_packet hands these out first.
+        self._pending = []
 
     @classmethod
     def crc16(cls, data: bytes, initial: int = 0xFFFF) -> int:
@@ -291,6 +294,11 @@ class PacketProtocol:
 
         return (pkt_type, bytes(payload))
 
+    def drop_pending(self) -> None:
+        """Forget DATA queued by send_packet (after a failed exchange it belongs
+        to a conversation that is over)."""
+        self._pending = []
+
     def send_ack(self, seq: int = 0) -> bool:
         """Send ACK packet carrying the acknowledged sequence bit."""
         return self.send_raw(PKT_TYPE_ACK | (PKT_SEQ_BIT if seq else 0))
@@ -321,6 +329,7 @@ class PacketProtocol:
 
         self._seq_tx = 0
         self._seq_rx = 0
+        self._pending = []
 
         for _attempt in range(self.retries):
             if not self.send_raw(PKT_TYPE_RESET):
@@ -389,9 +398,17 @@ class PacketProtocol:
                     break  # Retry sending
 
                 if base_type == PKT_TYPE_DATA:
-                    # Received a DATA packet from peer (e.g., peer's retry)
-                    # ACK it to stop their retries, then keep waiting for our ACK
+                    # The peer sent DATA while we wait for our ACK: our ACK to
+                    # its previous packet was lost and it has moved on (e.g. a
+                    # file receiver's per-chunk READY credit), or it is
+                    # retrying. ACK it to stop its retries; if it is fresh,
+                    # keep it for receive_packet and advance the sequence bit
+                    # exactly as receive_packet would, or the peer's next
+                    # packet would be taken for a duplicate and dropped.
                     self.send_ack(seq)
+                    if seq == self._seq_rx:
+                        self._seq_rx ^= 1
+                        self._pending.append(payload)
                     last_result = "received unexpected DATA packet, ACKed it"
                     continue  # Keep waiting for our ACK
 
@@ -420,6 +437,9 @@ class PacketProtocol:
         """
         if timeout is None:
             timeout = self.timeout
+
+        if self._pending:
+            return self._pending.pop(0)
 
         deadline = time.time() + timeout
 
@@ -456,6 +476,7 @@ class PacketProtocol:
                 # reconnects-after-activity exposed this.
                 self._seq_rx = 0
                 self._seq_tx = 0
+                self._pending = []
                 self.send_ack(0)
                 continue
 

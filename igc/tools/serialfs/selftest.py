@@ -24,7 +24,8 @@ from v9kfiletrx import (
     Command, Direction, Compression, Status, StartPacket, DataPacket, EndPacket,
     ReadyPacket, ListPacket, ListRespPacket, FileTransfer, crc32,
 )
-from v9kfiletrx.protocol import CHUNK_SIZE, DATA_FLAG_COMPRESSED, parse_packet
+from v9kfiletrx.protocol import (CHUNK_SIZE, DATA_FLAG_COMPRESSED, START_FLAG_FLOWCTRL,
+                                 READY_CAP_FLOWCTRL, parse_packet)
 from v9kfiletrx.compress import compress_if_beneficial, rle_decompress
 import igcfs
 from igcfs import IgcFileServer, CMD_DELETE, CMD_MKDIR, CMD_RENAME, CMD_OK, CMD_QUIT
@@ -109,18 +110,25 @@ def igc_upload(pkt, data, remote_basename, rle=True):
     assert reply[0] == CMD_OK and reply[1] == 0, "upload not acknowledged"
 
 
-def igc_download(pkt, relpath, rle=True, stats=None):
+def igc_download(pkt, relpath, rle=True, stats=None, old=False):
     """Emulate request + ftx_receive_file: request START(PC_TO_VICTOR, RLE) ->
     recv START -> READY -> recv DATA... -> END. Chunks are expanded on the
-    per-chunk flag, as ftx_recv.c does. rle=False emulates an older igc that
-    requests no compression. stats, if given, collects
-    {'compressed': n, 'raw': n, 'wire': bytes}."""
+    per-chunk flag, as ftx_recv.c does. The server's START must ask for
+    per-chunk credits; we confirm with the caps byte and send a READY after
+    each chunk, like ftx_recv.c. rle=False emulates an older igc that
+    requests no compression; old=True one that answers a 2-byte READY and
+    never credits (the server must then stream without waiting). stats, if
+    given, collects {'compressed': n, 'raw': n, 'wire': bytes}."""
     req = StartPacket(direction=Direction.PC_TO_VICTOR, filename=relpath,
                       compression=Compression.RLE if rle else Compression.NONE)
     pkt.send_packet(req.pack())
     start = parse_packet(pkt.receive_packet(timeout=5))
     assert isinstance(start, StartPacket), f"expected START, got {start}"
-    pkt.send_packet(ReadyPacket(status=0).pack())
+    assert start.flags & START_FLAG_FLOWCTRL, "server did not request per-chunk credits"
+    if old:
+        pkt.send_packet(bytes([Command.READY, 0]))
+    else:
+        pkt.send_packet(ReadyPacket(status=0, caps=READY_CAP_FLOWCTRL).pack())
     out = bytearray()
     expected = 0
     while True:
@@ -136,6 +144,8 @@ def igc_download(pkt, relpath, rle=True, stats=None):
             stats['wire'] = stats.get('wire', 0) + len(p.data)
         out.extend(rle_decompress(p.data) if packed else p.data)
         expected += 1
+        if not old:
+            pkt.send_packet(ReadyPacket(status=0).pack())   # credit
     assert crc32(bytes(out)) == start.file_crc, "download CRC mismatch"
     return bytes(out)
 
@@ -196,17 +206,22 @@ def igc_img_push(pkt, name, img, stats=None):
     assert igc_img_close(pkt, 0, crc32(img)), "IMG_CLOSE not acknowledged"
 
 
-def igc_img_pull(pkt, name, stats=None):
-    """Emulate 'Write image file to disk' from the server: OPEN mode 1, IMG_GET
-    and reassemble each track, CLOSE with the CRC; returns the image bytes."""
+def igc_img_pull(pkt, name, stats=None, old=False):
+    """Emulate 'Write disk from image file': OPEN mode 1, IMG_GET one fragment
+    at a time and reassemble each track, CLOSE with the CRC; returns the image
+    bytes. old=True sends the 2-byte per-track IMG_GET of an older igc and
+    expects the whole track's fragments back to back."""
     status, sectors = igc_img_open(pkt, 1, name)
     assert status == 0, f"IMG_OPEN refused: {status}"
     out = bytearray()
     for t in range(v9kimage.track_count(sectors)):
         tbytes = v9kimage.track_bytes(t)
         nfrag = math.ceil(tbytes / IMG_FRAG_SIZE)
-        pkt.send_packet(bytes([CMD_IMG_GET, t]))
+        if old:
+            pkt.send_packet(bytes([CMD_IMG_GET, t]))
         for i in range(nfrag):
+            if not old:
+                pkt.send_packet(bytes([CMD_IMG_GET, t, i]))
             p = pkt.receive_packet(timeout=5)
             cmd, trk, frag, nf, flags, dlen = struct.unpack_from('<BBBBBH', p)
             assert (cmd, trk, frag, nf) == (CMD_IMG_TRACK, t, i, nfrag), "bad fragment header"
@@ -299,6 +314,8 @@ def main():
         check("download HELLO.TXT bytes match", got == b'hello victor\r\n')
         got2 = igc_download(pkt, 'SUB\\INNER.TXT')
         check("download SUB\\INNER.TXT", got2 == b'inner file')
+        check("download to old client (no credits)",
+              igc_download(pkt, mangled[0], old=True) == (bytes(range(256)) * 20))
         big = igc_download(pkt, mangled[0])
         check("download multi-chunk mangled file", big == (bytes(range(256)) * 20))
 
@@ -416,6 +433,14 @@ def main():
         check("img pull used raw and RLE fragments",
               st.get('raw', 0) >= 1 and st.get('rle', 0) >= 1)
         check("img pull .IMG matches", igc_img_pull(pkt, 'PUSHED.IMG') == ss)
+        check("img pull with old per-track IMG_GET", igc_img_pull(pkt, 'PUSHED.IMG', old=True) == ss)
+        assert igc_img_open(pkt, 1, 'PUSHED.IMG')[0] == 0
+        pkt.send_packet(bytes([CMD_IMG_GET, 0, 99]))
+        check("img get bad fragment -> ERROR", pkt.receive_packet(timeout=5)[0] == Command.ERROR)
+        pkt.send_packet(bytes([CMD_IMG_GET, 0, 0]))
+        check("img get after bad fragment still serves",
+              pkt.receive_packet(timeout=5)[0] == CMD_IMG_TRACK)
+        check("img abort after bad fragment -> OK", igc_img_close(pkt, 1, 0))
         check("img pull DS .IMG matches", igc_img_pull(pkt, 'PUSHDS.IMG') == ds)
         # The Victor writes .rle files as independently compressed 1 KB slices;
         # that concatenation must load like a one-shot stream.

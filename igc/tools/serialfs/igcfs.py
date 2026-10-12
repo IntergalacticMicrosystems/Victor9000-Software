@@ -57,8 +57,8 @@ from v9kfiletrx import (
     FileTransfer, crc32_file, crc32,
 )
 from v9kfiletrx.compress import rle_decompress, compress_if_beneficial
-from v9kfiletrx.protocol import (CHUNK_SIZE, DATA_FLAG_COMPRESSED, ResendPacket,
-                                 ErrorPacket, parse_packet)
+from v9kfiletrx.protocol import (CHUNK_SIZE, DATA_FLAG_COMPRESSED, START_FLAG_FLOWCTRL,
+                                 READY_CAP_FLOWCTRL, ResendPacket, ErrorPacket, parse_packet)
 import v9kimage
 
 # --- igc protocol extension (must match igc/src/serialfs_proto.h) -------------
@@ -85,6 +85,10 @@ CMD_IMG_TRACK = 0x33  # both:  [cmd][track][frag][nfrag][flags][len u16][data]
 CMD_IMG_CLOSE = 0x34  # V->PC: [cmd][status][crc32 u32]  status 0 done, 1 abort
                       #        reply CMD_OK / ERROR
 IMG_FRAG_SIZE = 1024
+# Wait for the Victor's per-chunk READY credit. It arrives once the chunk is
+# decoded and (every few chunks) flushed to disk, which on a floppy can take
+# seconds.
+CREDIT_TIMEOUT = 30.0
 IMG_FLAG_RLE = 0x01
 IMG_ST_OK, IMG_ST_NOT_FOUND, IMG_ST_INVALID, IMG_ST_OTHER = 0, 1, 2, 3
 
@@ -317,6 +321,7 @@ class IgcFileServer:
                 return
             except Exception as e:  # never let one bad request kill the server
                 log(f"  ! request failed: {e}")
+                self.pkt.drop_pending()
 
     def dispatch(self, payload):
         cmd = payload[0]
@@ -431,6 +436,13 @@ class IgcFileServer:
         is compressed when that saves bytes and flagged per chunk, exactly like
         the C sender; incompressible chunks go raw and unflagged.
 
+        Per-chunk credit (START_FLAG_FLOWCTRL): the Victor polls a 3-byte RX FIFO
+        and ACKs a chunk *before* it decodes and writes it, so streaming the next
+        chunk on the ACK alone overruns the FIFO while it is busy. With the flag
+        set the Victor sends a READY after each chunk is dealt with and we hold
+        the next chunk until then. An old igc that ignores the flag answers the
+        START with a 2-byte READY (caps 0) and gets the old back-to-back stream.
+
         Deliberately NOT FileTransfer.send_file: that ends with a trailing
         "wait for final ACK" receive which, against a back-to-back client, eats
         the *next* request packet. The corrected C ftx_send_file dropped exactly
@@ -442,6 +454,7 @@ class IgcFileServer:
         total = max(1, (len(data) + CHUNK_SIZE - 1) // CHUNK_SIZE)
         date, tm = FileTransfer._unix_to_dos_datetime(src.stat().st_mtime)
         start = StartPacket(direction=Direction.PC_TO_VICTOR, compression=compression,
+                            flags=START_FLAG_FLOWCTRL,
                             file_size=len(data), file_crc=file_crc, file_date=date,
                             file_time=tm, file_attr=ATTR_ARCHIVE,
                             filename=_dos_remote_name(remote_name))
@@ -449,6 +462,7 @@ class IgcFileServer:
         ready = parse_packet(self.ft._recv_packet())
         if not isinstance(ready, ReadyPacket) or ready.status != 0:
             raise IOError("receiver not ready")
+        credits = bool(ready.caps & READY_CAP_FLOWCTRL)
         for i in range(total):
             chunk = data[i * CHUNK_SIZE:(i + 1) * CHUNK_SIZE]
             flags = 0
@@ -461,11 +475,27 @@ class IgcFileServer:
             except PacketError as e:
                 log(f"  ! DATA chunk {i}/{total} (offset {i*CHUNK_SIZE}) failed: {e}")
                 raise
+            if credits:
+                credit = parse_packet(self._receive_until(CREDIT_TIMEOUT))
+                if not isinstance(credit, ReadyPacket) or credit.status != 0:
+                    raise IOError(f"no credit after chunk {i}/{total}: {credit}")
             if self.frame_gap:
                 time.sleep(self.frame_gap)
         self.pkt.send_packet(EndPacket(total_chunks=total, bytes_sent=len(data),
                                        file_crc=file_crc, status=Status.OK).pack())
         return len(data)
+
+    def _receive_until(self, timeout):
+        """receive_packet that rides out garbled frames: the packet layer NAKs
+        and raises on a CRC/framing error, but the Victor resends after a NAK,
+        so keep listening until the deadline."""
+        deadline = time.time() + timeout
+        while True:
+            try:
+                return self.pkt.receive_packet(timeout=max(0.1, deadline - time.time()))
+            except PacketError:
+                if time.time() >= deadline:
+                    raise
 
     # --- upload (Victor pushes a file to us) -------------------------------
 
@@ -626,8 +656,13 @@ class IgcFileServer:
             f"{sectors} sectors, {self.img_job.ntracks} tracks")
 
     def handle_img_get(self, payload):
+        """[cmd][track][frag]: send that one fragment. The Victor asks for the
+        next only after it has decoded this one, so nothing is on the wire
+        while it is busy (its RX FIFO is 3 bytes). A 2-byte IMG_GET from an
+        older igc gets the whole track's fragments back to back."""
         job = self.img_job
         track = payload[1] if len(payload) > 1 else -1
+        want = payload[2] if len(payload) > 2 else None
         if job is None or job.mode != 1 or not 0 <= track < job.ntracks:
             log(f"  -> imgget {track} refused (no read job or bad track)")
             self._reply_error(Error.PROTOCOL, "bad IMG_GET")
@@ -635,13 +670,19 @@ class IgcFileServer:
         start, end = job.track_span(track)
         data = job.image[start:end]
         nfrag = math.ceil(len(data) / IMG_FRAG_SIZE)
-        for i in range(nfrag):
+        if want is not None and not 0 <= want < nfrag:
+            log(f"  -> imgget {track}/{want} refused (bad fragment)")
+            self._reply_error(Error.PROTOCOL, "bad IMG_GET fragment")
+            return
+        for i in range(nfrag) if want is None else (want,):
             frag, packed = compress_if_beneficial(data[i * IMG_FRAG_SIZE:(i + 1) * IMG_FRAG_SIZE])
             self.pkt.send_packet(struct.pack('<BBBBBH', CMD_IMG_TRACK, track, i, nfrag,
                                              IMG_FLAG_RLE if packed else 0, len(frag)) + frag,
                                  timeout=self.ft.DATA_ACK_TIMEOUT)
             if self.frame_gap:
                 time.sleep(self.frame_gap)
+        if want is not None and want != nfrag - 1:
+            return
         job.received[track] = True
         if track % 10 == 9 or track == job.ntracks - 1:
             log(f"  -> imgget track {track + 1}/{job.ntracks}")

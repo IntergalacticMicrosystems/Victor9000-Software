@@ -164,6 +164,12 @@ class StartPacket:
         )
 
 
+# START packet flags
+START_FLAG_FLOWCTRL = 0x08  # DATA sender wants a READY credit after each chunk
+
+# READY caps (3rd byte of the READY that answers a START; absent = 0)
+READY_CAP_FLOWCTRL = 0x01   # Receiver will send per-chunk credits
+
 # DATA packet flags
 DATA_FLAG_COMPRESSED = 0x01  # This chunk's data is compressed
 
@@ -233,19 +239,23 @@ class EndPacket:
 
 @dataclass
 class ReadyPacket:
-    """FTX_CMD_READY - Ready to receive packet."""
+    """FTX_CMD_READY - Ready to receive packet.
+
+    caps is the capability byte (READY_CAP_*) on the READY that answers a
+    START; a pre-caps peer sends a 2-byte READY, read as caps 0."""
     status: int = 0
+    caps: int = 0
 
     def pack(self) -> bytes:
         """Pack into bytes for transmission."""
-        return struct.pack('<BB', Command.READY, self.status)
+        return struct.pack('<BBB', Command.READY, self.status, self.caps)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'ReadyPacket':
         """Unpack from received bytes."""
         if data[0] != Command.READY:
             raise ValueError("Not a READY packet")
-        return cls(status=data[1])
+        return cls(status=data[1], caps=data[2] if len(data) > 2 else 0)
 
 
 @dataclass
