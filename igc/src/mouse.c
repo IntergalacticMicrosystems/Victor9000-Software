@@ -90,8 +90,20 @@ bool_t mouse_init(void)
         /* Which serial port the mouse is on, so the serial file server is
          * not offered on it (see dlg_drive_select). Anything but 0 or 1 is
          * not this driver's layout: report unknown rather than guess. */
-        uint16_t idx = *(const uint16_t __far *)
-                        MK_FP(sregs.es, regs.x.bx + MOUSE_PORT_INDEX_OFS);
+        uint16_t idx;
+        uint16_t entry = regs.x.bx;
+
+        /* CuteMouse V9K extends function 24h: DH = 'V', DL = port (0 = A,
+         * 1 = B). MOUSE.DEV ignores 24h and restores DX, so DH stays 0. */
+        regs.x.ax = 0x0024;
+        regs.x.dx = 0;
+        int86(0x33, &regs, &regs);
+        if (regs.h.dh == 'V') {
+            idx = regs.h.dl;
+        } else {
+            idx = *(const uint16_t __far *)
+                   MK_FP(sregs.es, entry + MOUSE_PORT_INDEX_OFS);
+        }
         if (idx <= 1) {
             g_port = (uint8_t)idx;
         }
