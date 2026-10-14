@@ -8,8 +8,6 @@ IGC ~ Volkov / Midnight / Norton Commander-like 2-pane file manager
 
 **mouse**  
 
-Victor serial mouse driver (MOUSE.DEV from the RAT disk): byte-exact annotated NASM source,
-a MOUSE.COM TSR build of it, and a description of its INT 33h API and hardware use.  
 *Superseded:* replaced by the CuteMouse port for the Victor 9000 at
 https://github.com/IntergalacticMicrosystems/ctmouse_v9k  
 
