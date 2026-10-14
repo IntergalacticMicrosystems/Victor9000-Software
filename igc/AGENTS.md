@@ -48,7 +48,7 @@ Uses far pointers (`__far`) for data larger than 64KB. Memory tier detection at 
 | `mouse.c/h` | INT 33h driver wrapper (Victor MOUSE.DEV / MOUSE.COM): detect (incl. which serial port it owns), software text pointer, click polling with double-click detection |
 | `dosapi.c/h` | DOS INT 21h wrappers (files, directories, memory) |
 | `panel.c/h` | File list management, directory reading |
-| `ui.c/h` | Frame drawing, headers, F-key bar |
+| `ui.c/h` | Frame drawing, headers, F-key bar, activity box (`ui_status` / `ui_show_progress`), row-23 `ui_notice` / `ui_error` |
 | `dialog.c/h` | Modal dialogs with screen save/restore |
 | `fileops.c/h` | Copy, move, delete, mkdir, rename (local + serial, incl. recursive directory trees) |
 | `editor.c/h` | Text viewer (F3) and editor (F4) |
@@ -136,6 +136,30 @@ ui_update_cursor(old_cursor, old_top);
 ui_draw_panel(p, x_offset, active);   // x_offset 0=left, 40=right
 ```
 
+### Activity Box and Row 23
+Bracketed activity (`ui_status` ... `ui_clear_status`, `ui_show_progress` ...
+`ui_hide_progress`) is shown in one global bright box, 56 wide at column 12,
+growing down from row 8: top border with the title (reverse), line 0 (message
+or file name), the progress bar if active, then extra lines 1-2 (hints), then
+the bottom border, 3-6 rows. Rules:
+- Every open must be closed on every exit path. Close restores the background
+  from a static save buffer, resets everything (title, bar, all lines) and
+  always blanks row 23. Nothing may repaint the panels while the box is open
+  (no `ui_draw_*`, no `panel_read_dir`); there is no safety net.
+- Open and close dialogs and the box in LIFO order (a dialog opened during an
+  activity closes before the activity continues).
+- The frame is redrawn only when the height changes; a shrink first restores
+  the freed rows. `ui_progress_tick` stays tiny (at most 20 bar cells + 4
+  percent chars, nothing when no bar is open) because it runs between serial
+  packets. Layout changes only happen at operation boundaries.
+- Hints (`ui_status_line(1, "ESC cancels copy")`) are set by the code that
+  actually polls ESC and cleared by it when that operation ends (close also
+  clears them). Paths that never poll ESC get no hint.
+- `ui_error` writes row 23 in reverse video, also while the box is open;
+  `ui_status` / `ui_show_progress` blank row 23 so it does not linger.
+- One-off notices that nothing closes (the editor's `File saved`) use
+  `ui_notice` (row 23), never `ui_status`.
+
 ### Far Pointer Usage
 Large arrays must use far pointers (allocated from the DOS far heap):
 ```c
@@ -220,7 +244,9 @@ support disk images".
 
 ### Dialog Overlay Pattern
 `dlg_open()` saves the background and draws the frame; `dlg_close()`
-restores it and frees the save buffer:
+restores it and frees the save buffer. Dialogs may open over the activity box
+(overwrite prompt, Retry/Abort) as long as they close before the activity
+continues (LIFO):
 ```c
 DialogWindow win;
 if (dlg_open(&win, x, y, w, h, "Title")) {

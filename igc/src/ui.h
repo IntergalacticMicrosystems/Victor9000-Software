@@ -48,32 +48,39 @@ void ui_draw_panel_path(Panel *p, uint8_t x_offset, bool_t active);
 void ui_panel_path(const Panel *p, char *buf);
 
 /*---------------------------------------------------------------------------
- * Status Display
+ * Activity box (centred, grows 3..6 rows) and row-23 messages
+ *
+ * Bracket every ui_status / ui_show_progress with ui_clear_status /
+ * ui_hide_progress, and nothing may repaint the panels in between. Open and
+ * close dialogs and the box in LIFO order.
  *---------------------------------------------------------------------------*/
 
-/* Show status message on bottom line */
+/* Open/refresh the box with line 0 = msg (no title, no bar); blanks row 23 */
 void ui_status(const char *msg);
 
-/* Show error message */
-void ui_error(const char *msg);
+/* Extra line n = 1..2 (hints like "ESC cancels copy"); NULL/"" removes it.
+ * Set by the code that polls ESC, cleared by it when that operation ends. */
+void ui_status_line(uint8_t n, const char *text);
 
-/* Clear status line */
+/* Close + reset the box (title, bar, all lines), always blank row 23 */
 void ui_clear_status(void);
 
-/*---------------------------------------------------------------------------
- * Progress Display
- *---------------------------------------------------------------------------*/
-
-/* Show simple progress (for file operations) */
+/* Open/refresh the box: title, file name, bar at current/total; blanks row 23 */
 void ui_show_progress(const char *title, const char *filename,
                       uint16_t current, uint16_t total);
 
 /* Cheap in-place progress update - repaints only the changed bar cells and the
- * percentage. Requires a prior ui_show_progress to lay down the frame. Safe to
- * call between serial packets (a handful of video writes). */
+ * percentage (at most 24 video writes). No-op unless ui_show_progress opened
+ * the bar. Safe to call between serial packets. */
 void ui_progress_tick(uint16_t current, uint16_t total);
 
-/* Hide progress display */
+/* Same as ui_clear_status */
 void ui_hide_progress(void);
+
+/* One-off message on row 23 (not the box), e.g. "File saved" */
+void ui_notice(const char *msg);
+
+/* Error message on row 23 in reverse video */
+void ui_error(const char *msg);
 
 #endif /* UI_H */

@@ -961,7 +961,7 @@ static void editor_run(void)
                         draw_screen();
                         if (saved) {
                             g_saved_any = TRUE;
-                            ui_status("File saved");
+                            ui_notice("File saved");
                         } else {
                             ui_error("Save failed - disk full?");
                         }

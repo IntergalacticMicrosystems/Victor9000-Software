@@ -869,6 +869,9 @@ static int sfs_delete_tree_r(const char *remote_rel)
     return result;
 }
 
+/* ESC is polled only between children of a tree (a cancel returns -1). */
+#define SFS_TREE_HINT "ESC skips rest of this folder"
+
 int serialfs_get_tree(const char *remote_rel, const char *local_path)
 {
     int rc;
@@ -881,18 +884,25 @@ int serialfs_get_tree(const char *remote_rel, const char *local_path)
         kbd_wait();
         return -1;
     }
+    ui_status_line(1, SFS_TREE_HINT);
     rc = sfs_get_tree_r(remote_rel, local_path);
+    ui_status_line(1, (const char *)0);
     sfs_walk_free();
     return rc;
 }
 
 int serialfs_put_tree(const char *local_path, const char *remote_rel)
 {
+    int rc;
+
     if (!g_connected) {
         return -1;
     }
     g_tree_depth = 0;
-    return sfs_put_tree_r(local_path, remote_rel);
+    ui_status_line(1, SFS_TREE_HINT);
+    rc = sfs_put_tree_r(local_path, remote_rel);
+    ui_status_line(1, (const char *)0);
+    return rc;
 }
 
 int serialfs_delete_tree(const char *remote_rel)
@@ -907,7 +917,9 @@ int serialfs_delete_tree(const char *remote_rel)
         kbd_wait();
         return -1;
     }
+    ui_status_line(1, SFS_TREE_HINT);
     rc = sfs_delete_tree_r(remote_rel);
+    ui_status_line(1, (const char *)0);
     sfs_walk_free();
     return rc;
 }

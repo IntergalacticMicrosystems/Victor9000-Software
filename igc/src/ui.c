@@ -8,6 +8,7 @@
 #include "mem.h"
 #include "dosapi.h"
 #include "serialfs.h"
+#include "mouse.h"
 
 /*---------------------------------------------------------------------------
  * Constants
@@ -16,16 +17,35 @@
 #define RIGHT_X     40
 #define INNER_WIDTH 38      /* Width inside panel border */
 
-/* Progress-bar geometry (status line). Kept here so both the full draw and the
- * lightweight tick agree on cell positions. */
-#define PROG_BAR_X   54     /* first of the 20 bar cells */
+/* Activity box: a bright window in the middle of the screen, growing down
+ * from ACT_Y. Row 0 = top border with the title, row 1 = line 0 (message or
+ * file name), then the progress bar (if active), then the non-empty extra
+ * lines (hints), then the bottom border. One global box, no nesting. */
+#define ACT_X         12
+#define ACT_Y         8
+#define ACT_W         56
+#define ACT_MAXH      6
+#define ACT_BAR_Y     (ACT_Y + 2)
+#define ACT_TITLE_CAP 24    /* buffer sizes, including the NUL */
+#define ACT_LINE_CAP  53
+
+/* Progress-bar geometry, relative to ACT_X: "[20 cells] NNN%" centred in the
+ * 54-cell interior. Shared by the full draw and the lightweight tick. */
+#define PROG_BAR_X   15     /* first of the 20 bar cells */
 #define PROG_BAR_W   20
-#define PROG_PCT_X   76     /* "100%" field */
+#define PROG_PCT_X   37     /* "100%" field */
 
 /* Last bar fill / percentage actually painted, so ui_progress_tick can repaint
  * only what changed. Set by ui_show_progress (the full draw establishes them). */
 static uint8_t g_prog_bar_len;
 static uint8_t g_prog_pct;
+
+static uint8_t g_act_open;          /* box drawn, background in g_act_save */
+static uint8_t g_act_bar;           /* 1 = progress bar row present */
+static uint8_t g_act_h;             /* current height in rows */
+static char g_act_title[ACT_TITLE_CAP];
+static char g_act_line[3][ACT_LINE_CAP];
+static uint16_t g_act_save[ACT_W * ACT_MAXH];
 
 /*---------------------------------------------------------------------------
  * ui_draw_frame - Draw complete UI frame
@@ -349,17 +369,19 @@ void ui_update_cursor(uint16_t old_cursor, uint16_t old_top)
 }
 
 /*---------------------------------------------------------------------------
- * ui_status - Show status message
+ * Row 23: notices and errors
  *---------------------------------------------------------------------------*/
-void ui_status(const char *msg)
+static void status_blank(void)
 {
     scr_fill_rect(0, ROW_STATUS, 80, 1, ' ', ATTR_DIM);
+}
+
+void ui_notice(const char *msg)
+{
+    status_blank();
     scr_puts_xy(1, ROW_STATUS, msg, ATTR_DIM);
 }
 
-/*---------------------------------------------------------------------------
- * ui_error - Show error message
- *---------------------------------------------------------------------------*/
 void ui_error(const char *msg)
 {
     scr_fill_rect(0, ROW_STATUS, 80, 1, ' ', ATTR_DIM_REV);
@@ -368,55 +390,23 @@ void ui_error(const char *msg)
 }
 
 /*---------------------------------------------------------------------------
- * ui_clear_status - Clear status line
+ * Activity box internals
  *---------------------------------------------------------------------------*/
-void ui_clear_status(void)
+static uint8_t calc_pct(uint16_t current, uint16_t total)
 {
-    scr_fill_rect(0, ROW_STATUS, 80, 1, ' ', ATTR_DIM);
+    uint32_t p;
+
+    if (total == 0) return 0;
+    p = (uint32_t)current * 100L / total;
+    return (p > 100L) ? 100 : (uint8_t)p;
 }
 
-/*---------------------------------------------------------------------------
- * ui_show_progress - Show progress display
- *---------------------------------------------------------------------------*/
-void ui_show_progress(const char *title, const char *filename,
-                      uint16_t current, uint16_t total)
+/* "NNN%" at the percent field of the bar row */
+static void prog_pct(uint8_t pct)
 {
-    char buf[80];
-    uint8_t pct;
-    uint8_t bar_len;
-    uint8_t i;
+    char buf[5];
 
-    /* Calculate percentage */
-    if (total > 0) {
-        uint32_t p = (uint32_t)current * 100L / total;
-        pct = (p > 100L) ? 100 : (uint8_t)p;
-    } else {
-        pct = 0;
-    }
-
-    /* Build status line */
-    str_copy(buf, title);
-    str_copy(buf + str_len(buf), ": ");
-    if (filename != (const char *)0) {
-        str_copy_n(buf + str_len(buf), filename, 30);
-        str_copy(buf + str_len(buf), " ");
-    }
-
-    /* Show on status line */
-    scr_fill_rect(0, ROW_STATUS, 80, 1, ' ', ATTR_DIM);
-    scr_puts_xy(1, ROW_STATUS, buf, ATTR_DIM);
-
-    /* Draw progress bar */
-    bar_len = (pct * PROG_BAR_W) / 100;
-    scr_putc_xy(PROG_BAR_X - 1, ROW_STATUS, '[', ATTR_DIM);
-    for (i = 0; i < PROG_BAR_W; i++) {
-        scr_putc_xy(PROG_BAR_X + i, ROW_STATUS,
-                    (i < bar_len) ? 0xDB : 0xB0, ATTR_DIM);
-    }
-    scr_putc_xy(PROG_BAR_X + PROG_BAR_W, ROW_STATUS, ']', ATTR_DIM);
-
-    /* Show percentage (columns 76-79, so "100%" fits on screen) */
-    buf[0] = '0' + (pct / 100) % 10;
+    buf[0] = '0' + pct / 100;
     buf[1] = '0' + (pct / 10) % 10;
     buf[2] = '0' + pct % 10;
     buf[3] = '%';
@@ -425,69 +415,182 @@ void ui_show_progress(const char *title, const char *filename,
         buf[0] = ' ';
         if (buf[1] == '0') buf[1] = ' ';
     }
-    scr_puts_xy(PROG_PCT_X, ROW_STATUS, buf, ATTR_DIM);
+    scr_puts_xy(ACT_X + PROG_PCT_X, ACT_BAR_Y, buf, ATTR_NORMAL);
+}
 
-    /* Remember what we painted so a following ui_progress_tick repaints only
-     * the delta. */
-    g_prog_bar_len = bar_len;
-    g_prog_pct = pct;
+/* Whole bar from the cached fill and percent (never drawn empty) */
+static void act_bar(void)
+{
+    uint8_t i;
+
+    scr_putc_xy(ACT_X + PROG_BAR_X - 1, ACT_BAR_Y, '[', ATTR_NORMAL);
+    for (i = 0; i < PROG_BAR_W; i++) {
+        scr_putc_xy(ACT_X + PROG_BAR_X + i, ACT_BAR_Y,
+                    (i < g_prog_bar_len) ? 0xDB : 0xB0, ATTR_NORMAL);
+    }
+    scr_putc_xy(ACT_X + PROG_BAR_X + PROG_BAR_W, ACT_BAR_Y, ']', ATTR_NORMAL);
+    prog_pct(g_prog_pct);
+}
+
+static void act_line(uint8_t n, uint8_t y)
+{
+    scr_puts_n_xy(ACT_X + 2, y, g_act_line[n], ACT_LINE_CAP - 1, ATTR_NORMAL);
+}
+
+/* Title area of the top border: every cell a title can occupy is reset to
+ * border first, so a shorter or removed title leaves nothing behind. */
+static void act_title(void)
+{
+    uint8_t len = (uint8_t)str_len(g_act_title);
+    uint8_t x = ACT_X + (ACT_W - len - 2) / 2;
+
+    scr_hline(ACT_X + (ACT_W - ACT_TITLE_CAP - 1) / 2, ACT_Y,
+              ACT_TITLE_CAP + 2, BOX_HORIZ, ATTR_NORMAL);
+    if (len) {
+        scr_putc_xy(x, ACT_Y, ' ', ATTR_REVERSE);
+        scr_puts_xy(x + 1, ACT_Y, g_act_title, ATTR_REVERSE);
+        scr_putc_xy(x + 1 + len, ACT_Y, ' ', ATTR_REVERSE);
+    }
+}
+
+/* Open, grow/shrink or refresh the box. The frame is redrawn only when the
+ * height changes; otherwise title, line 0 and the bar are repainted, plus the
+ * extra lines when 'extras' is set. */
+static void act_show(bool_t extras)
+{
+    uint8_t h = 3 + g_act_bar + (g_act_line[1][0] != 0) + (g_act_line[2][0] != 0);
+    uint8_t y, n;
+
+    if (!g_act_open) {
+        scr_save_rect(ACT_X, ACT_Y, ACT_W, ACT_MAXH, g_act_save);
+        g_act_open = 1;
+        g_act_h = 0;
+    }
+    if (h != g_act_h) {
+        if (h < g_act_h) {      /* give the freed rows back first */
+            scr_restore_rect(ACT_X, ACT_Y + h, ACT_W, g_act_h - h,
+                             g_act_save + h * ACT_W);
+        }
+        g_act_h = h;
+        scr_putc_xy(ACT_X, ACT_Y, BOX_TL, ATTR_NORMAL);
+        scr_hline(ACT_X + 1, ACT_Y, ACT_W - 2, BOX_HORIZ, ATTR_NORMAL);
+        scr_putc_xy(ACT_X + ACT_W - 1, ACT_Y, BOX_TR, ATTR_NORMAL);
+        for (y = ACT_Y + 1; y < ACT_Y + h - 1; y++) {
+            scr_putc_xy(ACT_X, y, BOX_VERT, ATTR_NORMAL);
+            scr_fill_rect(ACT_X + 1, y, ACT_W - 2, 1, ' ', ATTR_NORMAL);
+            scr_putc_xy(ACT_X + ACT_W - 1, y, BOX_VERT, ATTR_NORMAL);
+        }
+        scr_putc_xy(ACT_X, y, BOX_BL, ATTR_NORMAL);
+        scr_hline(ACT_X + 1, y, ACT_W - 2, BOX_HORIZ, ATTR_NORMAL);
+        scr_putc_xy(ACT_X + ACT_W - 1, y, BOX_BR, ATTR_NORMAL);
+        extras = TRUE;
+    }
+    act_title();
+    act_line(0, ACT_Y + 1);
+    y = ACT_Y + 2;
+    if (g_act_bar) {
+        act_bar();
+        y++;
+    }
+    if (extras) {
+        for (n = 1; n < 3; n++) {
+            if (g_act_line[n][0]) act_line(n, y++);
+        }
+    }
+}
+
+/*---------------------------------------------------------------------------
+ * ui_status - Open/refresh the activity box with a plain message
+ *---------------------------------------------------------------------------*/
+void ui_status(const char *msg)
+{
+    status_blank();             /* an earlier ui_error must not linger */
+    g_act_title[0] = '\0';
+    g_act_bar = 0;
+    str_copy_n(g_act_line[0], msg, ACT_LINE_CAP);
+    act_show(FALSE);
+}
+
+/*---------------------------------------------------------------------------
+ * ui_status_line - Set (or with NULL/"" remove) extra line n = 1..2
+ *---------------------------------------------------------------------------*/
+void ui_status_line(uint8_t n, const char *text)
+{
+    if (n < 1 || n > 2) return;
+    str_copy_n(g_act_line[n], text ? text : "", ACT_LINE_CAP);
+    if (g_act_open) act_show(TRUE);
+}
+
+/*---------------------------------------------------------------------------
+ * ui_clear_status - Close and reset the activity box, blank row 23
+ *---------------------------------------------------------------------------*/
+void ui_clear_status(void)
+{
+    if (g_act_open) {
+        scr_restore_rect(ACT_X, ACT_Y, ACT_W, g_act_h, g_act_save);
+        mouse_new_context();
+    }
+    g_act_open = 0;
+    g_act_bar = 0;
+    g_act_h = 0;
+    g_act_title[0] = '\0';
+    g_act_line[0][0] = g_act_line[1][0] = g_act_line[2][0] = '\0';
+    status_blank();
+}
+
+/*---------------------------------------------------------------------------
+ * ui_show_progress - Title, file name and bar in the activity box
+ *---------------------------------------------------------------------------*/
+void ui_show_progress(const char *title, const char *filename,
+                      uint16_t current, uint16_t total)
+{
+    status_blank();             /* an earlier ui_error must not linger */
+    g_prog_pct = calc_pct(current, total);
+    g_prog_bar_len = (g_prog_pct * PROG_BAR_W) / 100;
+    str_copy_n(g_act_title, title, ACT_TITLE_CAP);
+    str_copy_n(g_act_line[0], filename ? filename : "", ACT_LINE_CAP);
+    g_act_bar = 1;
+    act_show(FALSE);
 }
 
 /*---------------------------------------------------------------------------
  * ui_progress_tick - Cheap in-place progress update
  *
  * Updates only the bar cells that flipped since the last paint plus the
- * percentage digits - typically under a dozen video writes. The caller must
- * have drawn the frame once with ui_show_progress first (which sets the title,
- * filename and the delta baseline). This is deliberately tiny: it runs in the
- * gap between serial packets, and a full redraw there starves the Victor's
- * polled receive long enough to overrun its 3-byte FIFO at 38400.
+ * percentage digits: at most 20 + 4 video writes. The caller must have drawn
+ * the frame once with ui_show_progress first (which sets the title, filename
+ * and the delta baseline). This is deliberately tiny: it runs in the gap
+ * between serial packets, and a full redraw there starves the Victor's polled
+ * receive long enough to overrun its 3-byte FIFO at 38400.
  *---------------------------------------------------------------------------*/
 void ui_progress_tick(uint16_t current, uint16_t total)
 {
-    char buf[5];
     uint8_t pct;
     uint8_t bar_len;
     uint8_t i;
 
-    if (total == 0) {
+    if (!g_act_bar || total == 0) {
         return;
     }
-    {
-        uint32_t p = (uint32_t)current * 100L / total;
-        pct = (p > 100L) ? 100 : (uint8_t)p;
-    }
+    pct = calc_pct(current, total);
     if (pct == g_prog_pct) {
         return;                 /* nothing visible changed - stay off the wire */
     }
 
     bar_len = (pct * PROG_BAR_W) / 100;
-    if (bar_len > g_prog_bar_len) {
-        for (i = g_prog_bar_len; i < bar_len; i++) {
-            scr_putc_xy(PROG_BAR_X + i, ROW_STATUS, 0xDB, ATTR_DIM);
-        }
-    } else if (bar_len < g_prog_bar_len) {
-        for (i = bar_len; i < g_prog_bar_len; i++) {
-            scr_putc_xy(PROG_BAR_X + i, ROW_STATUS, 0xB0, ATTR_DIM);
-        }
+    for (i = g_prog_bar_len; i < bar_len; i++) {
+        scr_putc_xy(ACT_X + PROG_BAR_X + i, ACT_BAR_Y, 0xDB, ATTR_NORMAL);
+    }
+    for (i = bar_len; i < g_prog_bar_len; i++) {
+        scr_putc_xy(ACT_X + PROG_BAR_X + i, ACT_BAR_Y, 0xB0, ATTR_NORMAL);
     }
     g_prog_bar_len = bar_len;
     g_prog_pct = pct;
-
-    buf[0] = '0' + (pct / 100) % 10;
-    buf[1] = '0' + (pct / 10) % 10;
-    buf[2] = '0' + pct % 10;
-    buf[3] = '%';
-    buf[4] = '\0';
-    if (buf[0] == '0') {
-        buf[0] = ' ';
-        if (buf[1] == '0') buf[1] = ' ';
-    }
-    scr_puts_xy(PROG_PCT_X, ROW_STATUS, buf, ATTR_DIM);
+    prog_pct(pct);
 }
 
 /*---------------------------------------------------------------------------
- * ui_hide_progress - Hide progress display
+ * ui_hide_progress - Close the activity box
  *---------------------------------------------------------------------------*/
 void ui_hide_progress(void)
 {

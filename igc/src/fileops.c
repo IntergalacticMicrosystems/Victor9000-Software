@@ -770,6 +770,7 @@ int fops_copy(void)
         build_dst_path(dst_panel, f->name, dst_path);
 
         g_file_count = 1;
+        ui_status_line(1, "ESC cancels copy");
         ui_show_progress("Copying", f->name, 0, 1);
 
         if (file_is_dir(f)) {
@@ -780,6 +781,7 @@ int fops_copy(void)
     } else {
         /* Copy all selected files (already confirmed by fops_file_op) */
         g_file_count = selected;
+        ui_status_line(1, "ESC cancels copy");
 
         for (i = 0; i < src_panel->files.count && result != FOPS_CANCEL; i++) {
             f = panel_get_file(src_panel, i);
@@ -817,6 +819,18 @@ int fops_copy(void)
 /*---------------------------------------------------------------------------
  * fops_move - Move selected files to other panel
  *---------------------------------------------------------------------------*/
+/* The copy phase is the only part of a move that polls ESC (the following
+ * source delete ignores a cancel), so the hint is up for exactly that phase. */
+static int move_copy(FileEntry __far *f, const char *src, const char *dst)
+{
+    int rc;
+
+    ui_status_line(1, "ESC cancels move");
+    rc = file_is_dir(f) ? fops_copy_dir(src, dst) : fops_copy_file(src, dst);
+    ui_status_line(1, (const char *)0);
+    return rc;
+}
+
 int fops_move(void)
 {
     Panel *src_panel = panel_get_active();
@@ -868,11 +882,7 @@ int fops_move(void)
                 result = FOPS_OK;
             } else {
                 /* Rename failed, fall back to copy+delete */
-                if (file_is_dir(f)) {
-                    result = fops_copy_dir(src_path, dst_path);
-                } else {
-                    result = fops_copy_file(src_path, dst_path);
-                }
+                result = move_copy(f, src_path, dst_path);
                 if (result == FOPS_OK) {
                     if (file_is_dir(f)) {
                         fops_delete_dir(src_path);
@@ -883,11 +893,7 @@ int fops_move(void)
             }
         } else {
             /* Different drives - must copy+delete */
-            if (file_is_dir(f)) {
-                result = fops_copy_dir(src_path, dst_path);
-            } else {
-                result = fops_copy_file(src_path, dst_path);
-            }
+            result = move_copy(f, src_path, dst_path);
             if (result == FOPS_OK) {
                 if (file_is_dir(f)) {
                     fops_delete_dir(src_path);
@@ -917,11 +923,7 @@ int fops_move(void)
             }
 
             /* Fall back to copy+delete */
-            if (file_is_dir(f)) {
-                result = fops_copy_dir(src_path, dst_path);
-            } else {
-                result = fops_copy_file(src_path, dst_path);
-            }
+            result = move_copy(f, src_path, dst_path);
 
             if (result == FOPS_OK) {
                 if (file_is_dir(f)) {
@@ -992,7 +994,9 @@ int fops_delete(void)
         ui_show_progress("Deleting", f->name, 0, 1);
 
         if (file_is_dir(f)) {
+            ui_status_line(1, "ESC stops after this file");
             result = fops_delete_dir(path);
+            ui_status_line(1, (const char *)0);
         } else {
             result = fops_delete_file(path);
         }
@@ -1019,7 +1023,9 @@ int fops_delete(void)
             ui_show_progress("Deleting", f->name, g_file_current, g_file_count);
 
             if (file_is_dir(f)) {
+                ui_status_line(1, "ESC stops after this file");
                 result = fops_delete_dir(path);
+                ui_status_line(1, (const char *)0);
             } else {
                 result = fops_delete_file(path);
             }

@@ -624,6 +624,7 @@ void diskimg_read_to_file(void)
 
     str_copy(title, "Reading A:");
     title[8] = (char)('A' + drive);
+    ui_status_line(1, "ESC aborts after this track");
     ui_show_progress(title, name, 0, (total == SECTORS_DS) ? 160 : 80);
     ok = run_tracks(io, FALSE, (uint8_t)drive,
                     (uint8_t)((total == SECTORS_DS) ? 160 : 80), &crc);
@@ -720,6 +721,7 @@ void diskimg_write_from_file(void)
 
     str_copy(title, "Writing A:");
     title[8] = (char)('A' + drive);
+    ui_status_line(1, "ESC aborts after this track");
     ui_show_progress(title, name, 0, ntracks);
     ok = run_tracks(io, TRUE, (uint8_t)drive, ntracks, &crc);
     err = io->close(ok, ok ? crc : 0);

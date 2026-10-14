@@ -1,6 +1,18 @@
 # Plan: centered activity box in IGC
 
-Status: proposal, 2026-10-13, revised after review. Nothing implemented yet.
+Status: implemented 2026-10-13 (uncommitted at the time of writing). Verified in
+MAME: multi-file C:->C: copy (box rows 8-12 with bar and `ESC cancels copy`,
+row 23 blank, panels intact after), overwrite prompt over the box (box and bar
+intact after Y and A), ALT+ESC copy cancel (no remnants), mkdir afterwards,
+directory-tree delete (hint only during `fops_delete_dir`, box shrinks to 4 rows
+for plain files with the freed row restored), a single directory delete after a
+cancelled copy (clean box, no leftover hint), `Reading directory...` 3-row box,
+editor F2 `File saved` on row 23. Not run: serial tests (growth, mixed serial
+batch, FIFO timing), disk-image ESC abort, write-protect error, real hardware.
+Deviations: the bar row is the constant `ACT_BAR_Y` (row 10), not a `g_bar_y`
+variable, since it is always box row 2; `act_layout` keys on height only, and
+the slow path always resets the 26-cell title area of the top border, so a title
+appearing or vanishing needs no full layout.
 
 ## Goal
 
@@ -49,7 +61,7 @@ unused, so a bright box stands out at no cost.
   the whole batch (`result != FOPS_CANCEL` loops).
 - Recursive local directory delete: after each child (fileops.c:466).
 - Never polled: `fops_delete_file` (fileops.c:374), the top level of the delete
-  batch, rename-only moves (fileops.c:913), single serial file transfers, and
+  batch, renames in a move (fileops.c:913; a same-drive move whose rename fails falls back to the polled copy), single serial file transfers, and
   the disk-image preflight.
 - Serial trees: only between children, after whole-file transfers
   (serialfs.c:704/783/858). A cancel returns -1. The outer batch then reports
@@ -107,7 +119,7 @@ changes, never per tick.
 of the current height. When the height changes, redraw the frame. When it
 shrinks, first restore the freed rows from the save buffer. Rows are contiguous,
 so this is `scr_restore_rect(x, y+h, w, MAXH-h, save + h*w)`. Close restores the
-whole rect.
+current height; rows freed by an earlier shrink are already back.
 
 Rejected options:
 - (i) Always drawing the maximum height makes a `Reading directory...` box twice
@@ -166,7 +178,7 @@ callers are not strictly paired (`sfs_xfer_begin`).
 - Neither call touches extra lines. Their owner sets and clears them (see
   hints).
 - `ui_clear_status()` / `ui_hide_progress()`:
-  - If the box is open, they restore the whole rect, then reset all state
+  - If the box is open, they restore the current `g_act_h` rows, then reset all state
     (`g_act_open`, `g_act_bar`, `g_act_h`, title and all three lines) and call
     `mouse_new_context()`, as `dlg_close` does.
   - They always blank row 23 (`main.c:195` relies on it). With no box open,
@@ -214,7 +226,7 @@ about 90.
 |-----------|--------|
 | editor.c:964 `ui_status("File saved")` | **`ui_notice`** |
 | fileops.c local copy batch (773/792) and `fops_copy_dir` (336) | **set** `ESC cancels copy` before the batch, clear after. Every item reaches the polled data loop. |
-| fileops.c local move batch (863/911) | **set** `ESC cancels move` only when src drive != dst drive (all items copy then delete). Same drive means rename, which never polls, so no hint. |
+| fileops.c `fops_move` (3 copy sites) | `move_copy()` helper **sets** `ESC cancels move` around the copy phase only: renames never poll, and the source delete that follows ignores a cancel. Same-drive moves whose rename fails fall back to copy and get the hint too. |
 | fileops.c local delete batch (992/1019) | **set/clear** `ESC stops after this file` around each `fops_delete_dir` call only. Plain file deletes never poll. |
 | fileops.c serial batch (557) and serial delete (636/658) | none. Hints come from the tree functions. |
 | serialfs.c `serialfs_get_tree` / `put_tree` / `delete_tree` (~872/890/900) | **set** `ESC skips rest of this folder` on entry, **clear** on every return. Single-file transfers get no hint. |
