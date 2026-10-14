@@ -58,13 +58,13 @@ void ui_draw_frame(void)
     scr_hline(40, ROW_BOT_BORDER, 39, BOX_HORIZ, ATTR_DIM);
     scr_putc_xy(79, ROW_BOT_BORDER, BOX_BR, ATTR_DIM);
 
-    /* Build date in bottom border, right-aligned before the corner.
-     * __DATE__ expands to "Mmm dd yyyy" (11 chars). The right panel's
-     * file count only occupies cols 41-55, so this area is always clear. */
+    /* Build stamp in bottom border, right-aligned before the corner:
+     * "Mmm dd yyyy hh:mm" (17 chars, cols 61-77; __TIME__ is 24-hour, its
+     * ":ss" is cut off by the length). The right panel's file count only
+     * occupies cols 41-55, so this area is always clear. */
     {
-        static const char build_date[] = "Built " __DATE__;
-        uint8_t dlen = (uint8_t)str_len(build_date);
-        scr_puts_xy((uint8_t)(78 - dlen), ROW_BOT_BORDER, build_date, ATTR_DIM);
+        static const char build_date[] = __DATE__ " " __TIME__;
+        scr_puts_n_xy(61, ROW_BOT_BORDER, build_date, 17, ATTR_DIM);
     }
 
     /* Clear rows 22-23 */
@@ -145,13 +145,13 @@ void ui_draw_panel_path(Panel *p, uint8_t x_offset, bool_t active)
     /* Draw free space (right-justified before panel separator) */
     free_kb = dos_get_free_space(p->drive);
     if (free_kb > 0) {
-        /* Format as "NNNNK", switching to "NNM" for large drives */
+        /* Format as "NNNNk free", switching to "NNM free" for large drives */
         if (free_kb >= 10000L) {
             num_format_simple(buf, free_kb / 1024L);
-            str_copy(buf + str_len(buf), "M");
+            str_copy(buf + str_len(buf), "M free");
         } else {
             num_format_simple(buf, free_kb);
-            str_copy(buf + str_len(buf), "K");
+            str_copy(buf + str_len(buf), "k free");
         }
         free_len = str_len(buf);
         free_start = end_col - free_len;

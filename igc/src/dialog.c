@@ -245,8 +245,8 @@ int dlg_input(const char *title, const char *prompt, char *buf, uint16_t maxlen)
     int btn_selected = 0;  /* 0=OK, 1=Cancel */
     int in_buttons = 0;    /* 0=editing text, 1=in button area */
 
-    /* Calculate window size */
-    w = prompt_len + maxlen + 6;
+    /* Calculate window size: prompt row above the field, both at win.x+2 */
+    w = (prompt_len > maxlen ? prompt_len : maxlen) + 4;
     if (w < 30) w = 30;
     if (w > 70) w = 70;
     h = 6;
@@ -259,8 +259,8 @@ int dlg_input(const char *title, const char *prompt, char *buf, uint16_t maxlen)
         return DLG_CANCEL;
     }
 
-    /* Draw prompt */
-    dlg_print(&win, 1, 1, prompt);
+    /* Draw prompt on the row above the input field */
+    dlg_print(&win, 1, 0, prompt);
 
     input_x = win.x + 2;
 

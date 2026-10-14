@@ -117,6 +117,10 @@ $(OBJDIR)/%.obj: $(SRCDIR)/%.c $(SRCDIR)/*.h | dirs
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -fo=$@ $<
 
+# ui.c shows __DATE__/__TIME__; rebuild it whenever any other object (igc or
+# viclibc) is rebuilt so the stamp reflects the actual build.
+$(OBJDIR)/ui.obj: $(filter-out $(OBJDIR)/ui.obj,$(OBJS)) $(VIC_OBJS)
+
 # viclibc objects: built -zp1 with the viclibc include paths. Two rules for the
 # two source dirs; make picks whichever prerequisite exists.
 $(OBJDIR)/vic_%.obj: $(VICLIBC)/serial/src/%.c | dirs
