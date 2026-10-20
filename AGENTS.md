@@ -12,7 +12,7 @@ build/test/run commands, emit one `AGENTS.md proposal` block or the line
 - Purpose: Misc software for the Victor 9000: igc (serial file transfer client) and its PC-side server igcfs, key-remover, mem, mouse, v9kdiag, viclibc2.
 - Stack: 8086 C/asm for the Victor 9000 side (per-directory makefiles); Python 3 + pyserial for igcfs; PyInstaller for the shipped igcfs.exe.
 - Build: igcfs.exe must be built on Windows (PyInstaller cannot cross-compile). From a Prime session on the Linux box: `win11 run --cwd igc/tools/serialfs .\build.bat` (the Windows 11 VM; run `win11 help` first), then copy `igc/tools/serialfs/dist/igcfs.exe` over the tracked `igc/tools/serialfs/igcfs.exe` and commit it. Linux: `igc/tools/serialfs/build.sh`.
-- Test: `python igc/tools/serialfs/selftest.py` (Linux or `win11 run python selftest.py --cwd igc/tools/serialfs`).
+- Test: `python igc/tools/serialfs/selftest.py` (Linux or `win11 run --cwd igc/tools/serialfs python selftest.py`).
 - Run: `igcfs.exe --root C:\victor --dev COM1 --baud 38400 -v` (Windows) or `igcfs.py --root <dir> --dev /dev/ttyUSB0` (Linux); see igc/README.md.
 - Layout: `igc/` = client + `tools/serialfs/` (igcfs.py, build.bat/.sh, igcfs.spec, dist/) · `key-remover/`, `mem/`, `mouse/`, `v9kdiag/`, `viclibc2/` = one program each
 
