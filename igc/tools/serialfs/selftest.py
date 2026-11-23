@@ -88,7 +88,7 @@ def igc_upload(pkt, data, remote_basename, rle=True):
     the C sender, each chunk is compressed and flagged only when that saves
     bytes; rle=False emulates an older igc that never compresses."""
     file_crc = crc32(data)
-    total = max(1, (len(data) + CHUNK_SIZE - 1) // CHUNK_SIZE)
+    total = (len(data) + CHUNK_SIZE - 1) // CHUNK_SIZE
     date, tm = FileTransfer._unix_to_dos_datetime(0)
     start = StartPacket(direction=Direction.VICTOR_TO_PC,
                         compression=Compression.RLE if rle else Compression.NONE,
@@ -131,11 +131,14 @@ def igc_download(pkt, relpath, rle=True, stats=None, old=False):
         pkt.send_packet(ReadyPacket(status=0, caps=READY_CAP_FLOWCTRL).pack())
     out = bytearray()
     expected = 0
+    # Like ftx_recv.c: the chunk count comes from START's size, and END must match.
+    want = (start.file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
     while True:
         p = parse_packet(pkt.receive_packet(timeout=5))
         if isinstance(p, EndPacket):
+            assert p.total_chunks == want and expected == want, "bad chunk count"
             break
-        assert isinstance(p, DataPacket) and p.chunk_num == expected
+        assert isinstance(p, DataPacket) and p.chunk_num == expected and expected < want
         packed = bool(p.flags & DATA_FLAG_COMPRESSED)
         assert rle or not packed, "server compressed although not asked to"
         if stats is not None:
@@ -327,8 +330,9 @@ def main():
         igc_upload(pkt, updated, mangled[0])
         check("upload over mangled name updates real file",
               (rootp / 'a-long-name.dat').read_bytes() == updated)
+        # listdir, not exists(): NTFS resolves its own 8.3 alias of the real file
         check("upload over mangled name does not fork a new file",
-              not (rootp / mangled[0]).exists())
+              mangled[0] not in os.listdir(rootp))
 
         # --- upload (Victor pushes) into root (cwd from last list of root) ---
         igc_list(pkt, '')  # set server cwd back to root
@@ -543,6 +547,85 @@ def main():
         r = pkt.receive_packet(timeout=5)
         check("job survives a short CLOSE: abort -> OK", r[0] == CMD_OK)
         check("short-CLOSE test wrote nothing", not (rootp / 'SHORTCL.IMG').exists())
+
+        # --- zero-byte files ---
+        igc_list(pkt, '')
+        (rootp / 'ZERO.BIN').write_bytes(b'')
+        check("0-byte download", igc_download(pkt, 'ZERO.BIN') == b'')
+        check("0-byte download, old client", igc_download(pkt, 'ZERO.BIN', old=True) == b'')
+        igc_upload(pkt, b'', 'ZEROUP.BIN')
+        check("0-byte upload", (rootp / 'ZEROUP.BIN').read_bytes() == b'')
+
+        # --- a final name must be one plain entry, for every operation ---
+        before = set(os.listdir(rootp))
+        for bad in ('', '.', '..', '...', 'X.', 'X ', 'D:SECRET.TXT', 'HELLO.TXT:ADS'):
+            label = repr(bad)
+            ok, _ = igc_simple(pkt, bytes([CMD_DELETE]) + _p(bad))
+            check(f"delete {label} refused", not ok)
+            ok, _ = igc_simple(pkt, bytes([CMD_MKDIR]) + _p(bad))
+            check(f"mkdir {label} refused", not ok)
+            ok, _ = igc_simple(pkt, bytes([CMD_RENAME]) + _p(bad) + _p('RENAMED.TXT'))
+            check(f"rename from {label} refused", not ok)
+            ok, _ = igc_simple(pkt, bytes([CMD_RENAME]) + _p('HELLO.TXT') + _p(bad))
+            check(f"rename to {label} refused", not ok)
+            pkt.send_packet(StartPacket(direction=Direction.PC_TO_VICTOR, filename=bad).pack())
+            check(f"download {label} refused",
+                  pkt.receive_packet(timeout=5)[0] == Command.ERROR)
+            pkt.send_packet(StartPacket(direction=Direction.VICTOR_TO_PC, file_size=1,
+                                        file_crc=0, file_date=0, file_time=0,
+                                        file_attr=0x20, filename=bad).pack())
+            ready = parse_packet(pkt.receive_packet(timeout=5))
+            check(f"upload {label} refused",
+                  isinstance(ready, ReadyPacket) and ready.status != 0)
+        check("refused names changed nothing", set(os.listdir(rootp)) == before)
+
+        # --- MKDIR of an 8.3 alias must not create a sibling directory ---
+        (rootp / 'My Documents').mkdir()
+        igc_list(pkt, '')
+        ok, _ = igc_simple(pkt, bytes([CMD_MKDIR]) + _p('MYDOCU~1'))
+        check("mkdir of existing 8.3 alias refused",
+              not ok and 'MYDOCU~1' not in os.listdir(rootp))
+        igc_upload(pkt, b'in alias', 'MYDOCU~1\\INALIAS.TXT')
+        check("upload through alias lands in the real directory",
+              (rootp / 'My Documents' / 'INALIAS.TXT').read_bytes() == b'in alias')
+
+        # --- temp files: exclusive, and never through a planted link ---
+        (rootp / 'KEEP.TXT.igctmp').write_bytes(b'unrelated')
+        (rootp / 'KEEP.TXT').write_bytes(b'old')
+        igc_list(pkt, '')
+        igc_upload(pkt, b'new', 'KEEP.TXT')
+        check("upload leaves an unrelated .igctmp file alone",
+              (rootp / 'KEEP.TXT.igctmp').read_bytes() == b'unrelated'
+              and (rootp / 'KEEP.TXT').read_bytes() == b'new')
+        (rootp / 'KEEP.TXT.igctmp').unlink()
+
+        with tempfile.TemporaryDirectory() as outside:
+            secret = Path(outside) / 'secret.txt'
+            secret.write_bytes(b'outside root')
+            try:
+                (rootp / 'LINK.TXT').symlink_to(secret)
+                (rootp / 'PLANT.TXT.igctmp').symlink_to(secret)
+                (rootp / 'PLANT.IMG.igctmp').symlink_to(secret)
+                have_links = True
+            except OSError:         # Windows without symlink privilege
+                have_links = False
+                print("  skip symlink checks (no symlink privilege)")
+            if have_links:
+                igc_list(pkt, '')
+                pkt.send_packet(StartPacket(direction=Direction.PC_TO_VICTOR,
+                                            filename='LINK.TXT').pack())
+                check("download through escaping symlink refused",
+                      pkt.receive_packet(timeout=5)[0] == Command.ERROR)
+                igc_upload(pkt, b'planted', 'PLANT.TXT')
+                igc_img_push(pkt, 'PLANT.IMG', ss)
+                check("planted temp links are not written through",
+                      secret.read_bytes() == b'outside root'
+                      and (rootp / 'PLANT.TXT').read_bytes() == b'planted'
+                      and (rootp / 'PLANT.IMG').read_bytes() == ss)
+                for link in ('LINK.TXT', 'PLANT.TXT.igctmp', 'PLANT.IMG.igctmp'):
+                    (rootp / link).unlink()
+        check("no temp files left behind",
+              not [n for n in os.listdir(rootp) if n.startswith('igcfs-')])
 
         # --- QUIT ---
         pkt.send_packet(bytes([CMD_QUIT]))

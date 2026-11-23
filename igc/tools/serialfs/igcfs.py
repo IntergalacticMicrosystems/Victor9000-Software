@@ -41,6 +41,7 @@ Run:
 import argparse
 import math
 import os
+import secrets
 import struct
 import sys
 import time
@@ -200,6 +201,25 @@ def _short_name(real_name, is_dir):
     return base8, ext3, fits
 
 
+def _check_name(name):
+    """Refuse a requested final name that is not one plain directory entry.
+    Besides '.', '..' and separators, Windows treats 'x.', 'x ' and '...' as
+    aliases, 'D:name' as a path on another drive, and 'x:y' as a data stream."""
+    if not name or name[-1] in '. ' or any(c in name for c in ':/\\'):
+        raise PermissionError(f"bad name: {name!r}")
+
+
+def _open_temp(dest):
+    """Create a new temp file beside dest and return (path, file). Exclusive
+    creation means it can never follow a planted link or overwrite a file."""
+    while True:
+        tmp = dest.with_name(f"igcfs-{secrets.token_hex(4)}.igctmp")
+        try:
+            return tmp, open(tmp, 'xb')
+        except FileExistsError:
+            pass
+
+
 def build_dos_map(dirpath):
     """Return {DOSNAME: real_name} for dirpath, deterministic & collision-free.
 
@@ -272,6 +292,8 @@ class IgcFileServer:
         rel = (rel or '').replace('\\', '/').strip('/')
         target = self.root
         for part in (rel.split('/') if rel else []):
+            if ':' in part:
+                raise PermissionError(f"bad path: {rel!r}")
             if part in ('', '.'):
                 continue
             if part == '..':
@@ -295,6 +317,7 @@ class IgcFileServer:
             parent_rel, dosname = rel.rsplit('/', 1)
         else:
             parent_rel, dosname = '', rel
+        _check_name(dosname)
         real_dir = self._resolve(parent_rel)
         mapping = build_dos_map(real_dir)
         real_name = mapping.get(dosname.upper(), dosname)
@@ -417,7 +440,10 @@ class IgcFileServer:
         log(f"  <- getfile {rel}")
         try:
             real_dir, real_name = self._resolve_dir_and_name(rel)
-            src = real_dir / real_name
+            # The file itself may be a symlink leading outside the root.
+            src = (real_dir / real_name).resolve()
+            if self.root not in src.parents:
+                raise PermissionError("path escapes root")
             if not src.is_file():
                 raise FileNotFoundError(rel)
         except Exception as e:
@@ -451,7 +477,7 @@ class IgcFileServer:
         src = Path(src)
         data = src.read_bytes()
         file_crc = crc32(data)
-        total = max(1, (len(data) + CHUNK_SIZE - 1) // CHUNK_SIZE)
+        total = (len(data) + CHUNK_SIZE - 1) // CHUNK_SIZE  # 0 for an empty file
         date, tm = FileTransfer._unix_to_dos_datetime(src.stat().st_mtime)
         start = StartPacket(direction=Direction.PC_TO_VICTOR, compression=compression,
                             flags=START_FLAG_FLOWCTRL,
@@ -516,6 +542,7 @@ class IgcFileServer:
         else:
             dest_dir = self._resolve(self.cwd)
             base = name
+        _check_name(base)
         base = build_dos_map(dest_dir).get(base.upper(), base)
         dest = dest_dir / base
         # dest_dir is sandbox-checked by _resolve, but the final component
@@ -546,14 +573,13 @@ class IgcFileServer:
         via the READY status, everything after via the post-END CMD_OK/ERROR
         reply that igc's serialfs_put_named waits for."""
         dest_path = Path(dest_path)
-        tmp_path = dest_path.with_name(dest_path.name + '.igctmp')
         t0 = time.time()
 
         # Anything that fails before the data flows is a READY(status=1)
         # rejection, which the client already understands.
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
-            f = open(tmp_path, 'wb')
+            tmp_path, f = _open_temp(dest_path)
         except Exception as e:
             log(f"  -> putfile rejected: {e}")
             self.pkt.send_packet(ReadyPacket(status=1).pack())
@@ -781,15 +807,17 @@ class IgcFileServer:
             log(f"  -> CRC MISMATCH: Victor {crc:08X}, received {image_crc:08X}; nothing written")
             self._reply_error(Error.CRC, "image CRC mismatch")
             return
-        tmp_path = job.dest.with_name(job.dest.name + '.igctmp')
+        tmp_path = None
         try:
             job.dest.parent.mkdir(parents=True, exist_ok=True)
             data = (v9kimage.img_to_rle(bytes(job.image))
                     if job.dest.suffix.lower() == '.rle' else bytes(job.image))
-            tmp_path.write_bytes(data)
+            tmp_path, f = _open_temp(job.dest)
+            with f:
+                f.write(data)
             os.replace(tmp_path, job.dest)
         except Exception as e:
-            if tmp_path.exists():
+            if tmp_path is not None and tmp_path.exists():
                 tmp_path.unlink()
             log(f"  -> image write failed: {e}")
             self._reply_error(Error.FILE, str(e)[:60])
@@ -818,11 +846,10 @@ class IgcFileServer:
     def handle_mkdir(self, rel):
         log(f"  <- mkdir {rel}")
         try:
-            # Resolve parent under root, then create the new (real-named) dir.
-            rel = rel.replace('\\', '/').strip('/')
-            parent_rel, new = (rel.rsplit('/', 1) if '/' in rel else ('', rel))
-            parent = self._resolve(parent_rel)
-            (parent / new).mkdir()
+            # An 8.3 alias of an existing entry maps to it, so mkdir reports
+            # "exists" instead of creating a literal MYDOCU~1 beside it.
+            real_dir, real_name = self._resolve_dir_and_name(rel)
+            (real_dir / real_name).mkdir()
             self._reply_ok()
         except Exception as e:
             log(f"  -> mkdir failed: {e}")
@@ -840,6 +867,7 @@ class IgcFileServer:
             # New name is a bare 8.3 name in the same directory.
             new = new.replace('\\', '/').strip('/')
             new_name = new.rsplit('/', 1)[-1]
+            _check_name(new_name)
             src = old_dir / old_real
             # Like DOS, never replace another entry (POSIX rename would). Check
             # the 8.3 alias too. The same entry is fine: a case-only rename.
