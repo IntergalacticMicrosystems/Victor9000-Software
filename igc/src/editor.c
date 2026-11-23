@@ -11,6 +11,7 @@
 #include "util.h"
 #include "dialog.h"
 #include "mouse.h"
+#include "fileops.h"
 
 /*---------------------------------------------------------------------------
  * Static Variables
@@ -202,7 +203,12 @@ static bool_t load_file(const char *filename)
         uint16_t to_read = (g_editor.buf_size - total > 4096) ?
                            4096 : (uint16_t)(g_editor.buf_size - total);
         bytes = dos_read(h, &g_editor.buffer[total], to_read);
-        if (bytes <= 0) break;
+        if (bytes < 0) {
+            /* A partial load must not look complete: F2 would save it */
+            dos_close(h);
+            return FALSE;
+        }
+        if (bytes == 0) break;
         total += bytes;
     }
 
@@ -211,7 +217,12 @@ static bool_t load_file(const char *filename)
     g_editor.truncated = FALSE;
     if (total >= g_editor.buf_size) {
         char probe;
-        if (dos_read(h, &probe, 1) > 0) {
+        bytes = dos_read(h, &probe, 1);
+        if (bytes < 0) {
+            dos_close(h);
+            return FALSE;
+        }
+        if (bytes > 0) {
             g_editor.truncated = TRUE;
         }
     }
@@ -241,8 +252,14 @@ static bool_t save_file(void)
     dos_handle_t h;
     int16_t bytes;
     uint32_t written = 0;
+    const char *out;
 
-    h = dos_create(g_editor.filename, 0);
+    /* The original stays intact until the new copy is complete */
+    out = fops_stage(g_editor.filename, FALSE);
+    if (out == (const char *)0) {
+        return FALSE;
+    }
+    h = dos_create(out, 0);
     if (h < 0) {
         return FALSE;
     }
@@ -256,12 +273,19 @@ static bool_t save_file(void)
            error - treat anything less than requested as failure */
         if (bytes < 0 || (uint16_t)bytes < to_write) {
             dos_close(h);
+            dos_delete(out);
             return FALSE;
         }
         written += bytes;
     }
 
-    dos_close(h);
+    if (dos_close(h) != 0) {
+        dos_delete(out);
+        return FALSE;
+    }
+    if (fops_commit(out, g_editor.filename) != 0) {
+        return FALSE;
+    }
     g_editor.modified = FALSE;
 
     return TRUE;
@@ -1039,18 +1063,9 @@ bool_t editor_edit(const char *filename)
         }
         editor_run();
     } else {
-        /* New file */
-        str_copy(g_editor.filename, filename);
-        g_editor.truncated = FALSE;
-        g_editor.buf_used = 0;
-        g_editor.total_lines = 1;
-        g_editor.line_offs[0] = 0;
-        g_editor.modified = FALSE;
-        g_editor.top_line = 0;
-        g_editor.cursor_line = 0;
-        g_editor.cursor_col = 0;
-        g_editor.left_col = 0;
-        editor_run();
+        /* F4 only opens existing files, so this is a real error. Opening an
+           empty buffer here would let F2 overwrite the file with nothing. */
+        dlg_alert("Error", "Cannot open file");
     }
 
     /* Restore screen */

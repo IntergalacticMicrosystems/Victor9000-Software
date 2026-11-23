@@ -13,6 +13,7 @@
 #include "mem.h"
 #include "dosapi.h"
 #include "keyboard.h"
+#include "fileops.h"
 
 /* The viclibc structs are 1-byte packed on the wire (the library is built
  * -zp1). igc itself uses its default packing, so wrap these includes in
@@ -255,6 +256,7 @@ static int sfs_progress_cb(ftx_state_t *state, const ftx_stats_t *stats)
 int serialfs_get_file(const char *remote_rel, const char *local_path)
 {
     ftx_start_t req;
+    const char *out;
     uint8_t n;
     int rc;
 
@@ -265,6 +267,13 @@ int serialfs_get_file(const char *remote_rel, const char *local_path)
     /* The START filename field holds FTX_MAX_FILENAME-1 chars; refuse rather
      * than silently truncate and fetch some other path. */
     if (str_len(remote_rel) >= FTX_MAX_FILENAME) {
+        return -1;
+    }
+
+    /* The receiver truncates its target and deletes it on failure, so give it
+     * a temp file whenever a local file already exists. */
+    out = fops_stage(local_path, FALSE);
+    if (out == (const char *)0) {
         return -1;
     }
 
@@ -292,8 +301,11 @@ int serialfs_get_file(const char *remote_rel, const char *local_path)
         return -1;
     }
 
-    rc = ftx_receive_file(&g_ftx, local_path, 1, sfs_progress_cb);
-    return (rc == FTX_OK) ? 0 : -1;
+    rc = ftx_receive_file(&g_ftx, out, 1, sfs_progress_cb);
+    if (rc != FTX_OK) {
+        return -1;
+    }
+    return fops_commit(out, local_path);
 }
 
 /* Upload local_path, telling the server to store it as remote_name (a bare

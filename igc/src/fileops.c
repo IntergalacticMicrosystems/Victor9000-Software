@@ -137,6 +137,76 @@ static bool_t same_location(Panel *a, Panel *b)
 }
 
 /*---------------------------------------------------------------------------
+ * fops_stage / fops_commit - Replace a file only once its new copy is complete
+ *---------------------------------------------------------------------------*/
+static char g_stage_path[MAX_FULL_PATH];
+
+const char *fops_stage(const char *dst, bool_t force)
+{
+    int16_t attr = dos_get_attr(dst);
+    uint16_t dir_len;
+    char c;
+
+    if (attr < 0) {
+        return dst;     /* Nothing to protect */
+    }
+    if ((attr & DOS_ATTR_DIRECTORY) || ((attr & DOS_ATTR_READONLY) && !force)) {
+        return (const char *)0;
+    }
+
+    /* Same directory, so the final rename cannot cross drives */
+    dir_len = (uint16_t)(path_basename(dst) - dst);
+    if (dir_len + sizeof("IGCTMP0.$$$") > MAX_FULL_PATH) {
+        return (const char *)0;
+    }
+    str_copy(g_stage_path, dst);
+    for (c = '0'; c <= '9'; c++) {
+        str_copy(g_stage_path + dir_len, "IGCTMP0.$$$");
+        g_stage_path[dir_len + 6] = c;
+        if (!dos_exists(g_stage_path)) {
+            return g_stage_path;
+        }
+    }
+    return (const char *)0;
+}
+
+int fops_commit(const char *written, const char *dst)
+{
+    char msg[40];
+    int16_t attr;
+
+    if (written == dst) {
+        return 0;
+    }
+
+    attr = dos_get_attr(dst);
+    if (attr >= 0) {
+        if (attr & DOS_ATTR_READONLY) {
+            dos_set_attr(dst, (uint8_t)(attr & ~DOS_ATTR_READONLY));
+        }
+        if (dos_delete(dst) != 0) {
+            dos_set_attr(dst, (uint8_t)attr);
+            dos_delete(written);
+            ui_error("Cannot replace file");
+            kbd_wait();
+            ui_clear_status();
+            return -1;
+        }
+    }
+
+    if (dos_rename(written, dst) != 0) {
+        /* The original is gone: keep the only good copy and say where it is */
+        str_copy(msg, "New copy left as ");
+        str_copy(msg + str_len(msg), path_basename(written));
+        ui_error(msg);
+        kbd_wait();
+        ui_clear_status();
+        return -1;
+    }
+    return 0;
+}
+
+/*---------------------------------------------------------------------------
  * fops_copy_file - Copy a single file
  *---------------------------------------------------------------------------*/
 int fops_copy_file(const char *src, const char *dst)
@@ -145,7 +215,7 @@ int fops_copy_file(const char *src, const char *dst)
     int16_t bytes_read, bytes_written;
     int16_t src_attr;
     uint16_t src_date = 0, src_time = 0;
-    bool_t overwrite = FALSE;
+    const char *out;
     int result = FOPS_OK;
 
     /* Ensure the copy buffer is allocated (no-op if a batch already holds it). */
@@ -175,7 +245,6 @@ int fops_copy_file(const char *src, const char *dst)
                 return FOPS_CANCEL;
             }
         }
-        overwrite = TRUE;
     }
 
     src_attr = dos_get_attr(src);
@@ -193,16 +262,10 @@ int fops_copy_file(const char *src, const char *dst)
         src_date = 0;
     }
 
-    /* Delete the existing destination only now that the source is open, so a
-       failed source open can't destroy the destination with nothing to replace
-       it. The delete also clears a read-only attribute dos_create trips on. */
-    if (overwrite && fops_delete_file(dst) != FOPS_OK) {
-        dos_close(src_h);
-        return FOPS_ERROR;
-    }
-
-    /* Create destination file */
-    dst_h = dos_create(dst, 0);
+    /* An existing destination stays intact until the new copy is complete.
+       Force: the user confirmed the overwrite, even of a read-only file. */
+    out = fops_stage(dst, TRUE);
+    dst_h = (out != (const char *)0) ? dos_create(out, 0) : -1;
     if (dst_h < 0) {
         dos_close(src_h);
         ui_error("Cannot create destination file");
@@ -248,10 +311,16 @@ int fops_copy_file(const char *src, const char *dst)
     }
 
     dos_close(src_h);
-    dos_close(dst_h);
+    if (dos_close(dst_h) != 0 && result == FOPS_OK) {
+        ui_error("Write error - disk full?");
+        kbd_wait();
+        result = FOPS_ERROR;
+    }
 
     if (result != FOPS_OK) {
-        dos_delete(dst);  /* Clean up partial file */
+        dos_delete(out);  /* Clean up partial file */
+    } else if (fops_commit(out, dst) != 0) {
+        result = FOPS_ERROR;
     } else if (src_attr > 0) {
         dos_set_attr(dst, (uint8_t)src_attr);
     }
@@ -675,7 +744,7 @@ static int fops_delete_serial(Panel *panel)
  * "<N> files" when more than one file is selected (the highlighted name is
  * not shown). Copy and move then run with no further confirmation; delete
  * keeps its own confirmation and rename prompts for the new name (rename
- * always acts on the cursor item).
+ * acts on the item shown, and is refused for more than one file).
  *---------------------------------------------------------------------------*/
 int fops_file_op(void)
 {
@@ -719,7 +788,14 @@ int fops_file_op(void)
         case 'C': return fops_copy();
         case 'M': return fops_move();
         case 'D': return fops_delete();
-        case 'R': return fops_rename();
+        case 'R':
+            if (single == (FileEntry __far *)0) {
+                ui_error("Select one file to rename");
+                kbd_wait();
+                ui_clear_status();
+                return FOPS_CANCEL;
+            }
+            return fops_rename(single);
     }
     return FOPS_CANCEL;
 }
@@ -1084,17 +1160,13 @@ int fops_mkdir(void)
 /*---------------------------------------------------------------------------
  * fops_rename - Rename file/directory
  *---------------------------------------------------------------------------*/
-int fops_rename(void)
+int fops_rename(FileEntry __far *f)
 {
     Panel *panel = panel_get_active();
-    FileEntry __far *f;
     char old_name[14];
     char new_name[14];
     char old_path[MAX_FULL_PATH];
     char new_path[MAX_FULL_PATH];
-
-    f = panel_get_cursor_file(panel);
-    if (f == (FileEntry __far *)0) return FOPS_CANCEL;
 
     /* Don't rename . or .. */
     if (file_is_parent(f) || (f->name[0] == '.' && f->name[1] == '\0')) {

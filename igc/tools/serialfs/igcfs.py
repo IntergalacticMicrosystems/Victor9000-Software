@@ -840,7 +840,16 @@ class IgcFileServer:
             # New name is a bare 8.3 name in the same directory.
             new = new.replace('\\', '/').strip('/')
             new_name = new.rsplit('/', 1)[-1]
-            (old_dir / old_real).rename(old_dir / new_name)
+            src = old_dir / old_real
+            # Like DOS, never replace another entry (POSIX rename would). Check
+            # the 8.3 alias too. The same entry is fine: a case-only rename.
+            src_stat = os.lstat(src)
+            alias = build_dos_map(old_dir).get(new_name.upper(), new_name)
+            for name in (new_name, alias):
+                if os.path.lexists(old_dir / name) and not os.path.samestat(
+                        os.lstat(old_dir / name), src_stat):
+                    raise FileExistsError(f"target exists: {name!r}")
+            src.rename(old_dir / new_name)
             self._reply_ok()
         except Exception as e:
             log(f"  -> rename failed: {e}")

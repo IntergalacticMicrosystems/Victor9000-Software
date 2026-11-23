@@ -49,9 +49,18 @@ int fops_delete(void);
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
 int fops_mkdir(void);
 
-/* F5 > Rename: Rename file/directory */
+/* F5 > Rename: Rename the given file/directory in the active panel */
 /* Returns FOPS_OK, FOPS_CANCEL, or FOPS_ERROR */
-int fops_rename(void);
+int fops_rename(FileEntry __far *f);
+
+/* Safe overwrite: write to the path fops_stage returns (dst itself if dst does
+ * not exist, else a temp name beside it), then call fops_commit with that same
+ * pointer. Returns NULL if dst is a directory, is read-only (unless force), or
+ * no temp name is free. Only one staged write can be active at a time. */
+const char *fops_stage(const char *dst, bool_t force);
+
+/* Replace dst with the staged file. Reports its own errors. Returns 0 or -1. */
+int fops_commit(const char *written, const char *dst);
 
 /*---------------------------------------------------------------------------
  * Internal Helpers (exposed for progress display)

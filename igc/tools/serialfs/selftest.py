@@ -380,6 +380,25 @@ def main():
         ok, _ = igc_simple(pkt, bytes([CMD_DELETE]) + _p('RENAMED.BIN'))
         check("delete RENAMED.BIN", ok and not (rootp / 'RENAMED.BIN').exists())
 
+        # --- rename never replaces another entry (matches DOS) ---
+        (rootp / 'KEEPA.TXT').write_bytes(b'a')
+        (rootp / 'KEEPB.TXT').write_bytes(b'b')
+        (rootp / 'Long File Name.txt').write_bytes(b'long')
+        igc_list(pkt, '')
+        ok, _ = igc_simple(pkt, bytes([CMD_RENAME]) + _p('KEEPA.TXT') + _p('KEEPB.TXT'))
+        check("rename onto existing file refused",
+              not ok and (rootp / 'KEEPA.TXT').read_bytes() == b'a'
+              and (rootp / 'KEEPB.TXT').read_bytes() == b'b')
+        ok, _ = igc_simple(pkt, bytes([CMD_RENAME]) + _p('KEEPA.TXT') + _p('LONGFI~1.TXT'))
+        check("rename onto existing 8.3 alias refused",
+              not ok and (rootp / 'KEEPA.TXT').read_bytes() == b'a'
+              and (rootp / 'Long File Name.txt').read_bytes() == b'long')
+        ok, _ = igc_simple(pkt, bytes([CMD_RENAME]) + _p('KEEPA.TXT') + _p('keepa.txt'))
+        check("case-only rename allowed",
+              ok and 'keepa.txt' in os.listdir(rootp) and 'KEEPA.TXT' not in os.listdir(rootp))
+        for leftover in ('keepa.txt', 'KEEPB.TXT', 'Long File Name.txt'):
+            (rootp / leftover).unlink()
+
         # --- error paths ---
         req = StartPacket(direction=Direction.PC_TO_VICTOR, filename='NOPE.TXT')
         pkt.send_packet(req.pack())

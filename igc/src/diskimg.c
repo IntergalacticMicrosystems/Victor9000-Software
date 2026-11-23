@@ -24,6 +24,7 @@
 #include "mem.h"
 #include "keyboard.h"
 #include "serialfs.h"
+#include "fileops.h"
 
 #pragma pack(push, 1)
 #include "ftx_crc32.h"
@@ -241,6 +242,7 @@ static dos_handle_t g_fh;
 static bool_t   g_create;
 static bool_t   g_rle;
 static char     g_lpath[MAX_FULL_PATH];
+static const char *g_lwrite;    /* create: file being written (see fops_stage) */
 static uint32_t g_hdr_crc;      /* .RLE read: CRC from the header           */
 static uint16_t g_in_pos;       /* .RLE read: next unread byte in g_scr     */
 static uint16_t g_in_len;       /*            bytes of file data in g_scr   */
@@ -252,7 +254,7 @@ static const char *loc_fail(const char *msg)
 {
     dos_close(g_fh);
     if (g_create) {
-        dos_delete(g_lpath);
+        dos_delete(g_lwrite);
     }
     return msg;
 }
@@ -269,7 +271,8 @@ static const char *loc_open(bool_t create, const char *path, uint16_t *total)
     g_in_pos = g_in_len = g_run_left = 0;
 
     if (create) {
-        g_fh = dos_create(path, 0);
+        g_lwrite = fops_stage(g_lpath, FALSE);
+        g_fh = (g_lwrite != (const char *)0) ? dos_create(g_lwrite, 0) : -1;
         if (g_fh < 0) {
             return "Cannot create image file";
         }
@@ -456,7 +459,9 @@ static const char *loc_close(bool_t ok, uint32_t crc)
         err = "Cannot write image file";
     }
     if (g_create && (!ok || err != (const char *)0)) {
-        dos_delete(g_lpath);
+        dos_delete(g_lwrite);
+    } else if (g_create && fops_commit(g_lwrite, g_lpath) != 0) {
+        err = "Cannot replace image file";
     }
     if (!g_create && ok && g_rle && crc != g_hdr_crc) {
         err = "Image CRC mismatch";
