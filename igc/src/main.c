@@ -127,6 +127,8 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
     char name[14];
     char temp[16];
     uint8_t cur;
+    int rc;
+    bool_t keep = FALSE;
 
     /* Copy the 8.3 name out of far storage, form the remote relative path. */
     str_copy_n(name, f->name, 13);
@@ -141,13 +143,25 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
     str_copy(&temp[3], "IGCVIEW.TMP");
 
     ui_status("Fetching from server...");
-    if (serialfs_get_file(remote, temp) != 0) {
+    rc = serialfs_get_file(remote, temp);
+    if (rc != 0) {
         ui_clear_status();
-        ui_error("Cannot fetch remote file");
-        kbd_wait();
+        if (rc != SFS_CANCEL) {             /* Esc needs no message */
+            ui_error("Cannot fetch remote file");
+            kbd_wait();
+        }
         return;
     }
     ui_clear_status();
+
+    /* Esc on the last chunk is too late to stop the fetch: honour it here */
+    if (kbd_check()) {
+        KeyEvent k = kbd_get();
+        if (k.type == KEY_ASCII && k.code == KEY_ESC) {
+            dos_delete(temp);
+            return;
+        }
+    }
 
     if (edit) {
         /* Upload only if the editor actually saved the temp file - sending an
@@ -155,10 +169,28 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
          * bytes at 38400 baud. */
         if (editor_edit(temp)) {
             ui_status("Saving to server...");
-            if (serialfs_put_file(temp, remote) != 0) {
+            rc = serialfs_put_file(temp, remote);
+            if (rc != 0) {
+                /* The temp file is the only copy of the edits. Keep it under
+                   a name the next serial view or edit won't overwrite:
+                   IGCED0.TMP .. IGCED9.TMP (DOS rename refuses an existing
+                   name). */
+                char msg[64], kept[16];
+                str_copy(kept, temp);
+                str_copy(&kept[3], "IGCED0.TMP");
+                while (kept[8] <= '9' && dos_rename(temp, kept) != 0) {
+                    kept[8]++;
+                }
+                if (kept[8] > '9') {
+                    str_copy(kept, temp);
+                }
+                str_copy(msg, rc == SFS_CANCEL ? "Cancelled - edits kept in "
+                                               : "Not saved to server - edits in ");
+                str_copy(msg + str_len(msg), kept);
                 ui_clear_status();
-                ui_error("Cannot save to server");
+                ui_error(msg);
                 kbd_wait();
+                keep = TRUE;
             } else {
                 ui_clear_status();
             }
@@ -168,7 +200,9 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
         editor_view(temp);
     }
 
-    dos_delete(temp);
+    if (!keep) {
+        dos_delete(temp);
+    }
 }
 
 /*---------------------------------------------------------------------------
@@ -423,7 +457,13 @@ static void handle_key(KeyEvent *key)
                     old_top = p->top;
                     panel_toggle_selection(p);
                     panel_cursor_down(p);
-                    ui_update_cursor(old_cursor, old_top);
+                    if (p->cursor == old_cursor) {
+                        /* Last entry: the cursor stays, so redraw the row */
+                        ui_draw_panel_row(p, g_active_panel ? RIGHT_PANEL_X
+                                          : LEFT_PANEL_X, TRUE, p->cursor);
+                    } else {
+                        ui_update_cursor(old_cursor, old_top);
+                    }
                 }
                 break;
 

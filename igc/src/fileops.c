@@ -658,8 +658,8 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
             if (selected == 0) break;
             continue;
         }
-        /* Esc between items stops the batch (a single serial file has no
-           cancel point of its own). */
+        /* Esc between items stops the batch (Esc during a file is seen by
+           serialfs and returns SFS_CANCEL). */
         if (g_file_current > 0 && esc_pressed()) {
             result = FOPS_CANCEL;
             break;
@@ -729,6 +729,12 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
         }
 
         if (selected == 0) break;
+    }
+
+    /* An Esc too late to stop the last file must not reach the main loop,
+       where it would open the exit prompt */
+    if (result == FOPS_OK) {
+        esc_pressed();
     }
 
     ui_hide_progress();

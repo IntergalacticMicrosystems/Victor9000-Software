@@ -61,6 +61,7 @@ static uint16_t       g_io_bufsize = 0;
 /* Defined with the control commands below; also consumes the server's
  * post-END upload status in serialfs_put_named. */
 static int sfs_wait_ok(void);
+static bool_t sfs_tree_cancelled(void);
 
 /*---------------------------------------------------------------------------
  * Connection management
@@ -264,12 +265,21 @@ static void sfs_xfer_begin(const char *path)
     ui_show_progress("Copying", g_xfer_name, 0, 1);
 }
 
-/* viclibc progress hook for the receive (download) path. */
+/* TRUE when Esc stopped the current single-file transfer. */
+static bool_t g_xfer_cancel;
+
+/* viclibc progress hook for the receive (download) path. With flow control
+ * the server waits for our credit, so the DOS keyboard check is safe here;
+ * a non-zero return makes ftx_recv send ABORT instead of the credit. */
 static int sfs_progress_cb(ftx_state_t *state, const ftx_stats_t *stats)
 {
-    (void)state;
     ui_progress_tick(stats->chunks_done, stats->total_chunks);
-    return 0;                           /* never abort from the bar */
+    if (state->flow_ctrl && stats->chunks_done < stats->total_chunks &&
+        sfs_tree_cancelled()) {
+        g_xfer_cancel = TRUE;
+        return 1;
+    }
+    return 0;
 }
 
 int serialfs_get_file(const char *remote_rel, const char *local_path)
@@ -320,9 +330,12 @@ int serialfs_get_file(const char *remote_rel, const char *local_path)
         return -1;
     }
 
+    /* On failure or Esc the receiver deletes `out`, a temp file whenever a
+       local file existed, so the original survives */
+    g_xfer_cancel = FALSE;
     rc = ftx_receive_file(&g_ftx, out, 1, sfs_progress_cb);
     if (rc != FTX_OK) {
-        return -1;
+        return g_xfer_cancel ? SFS_CANCEL : -1;
     }
     return fops_commit(out, local_path);
 }
@@ -423,15 +436,17 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
      * bytes are in flight to be missed. */
     dpkt = (ftx_data_t __far *)g_ftx.pkt_buf;
     chunk = 0;
+    g_xfer_cancel = FALSE;
     while (chunk < total) {
         int16_t  blk;
         uint16_t off;
 
-        blk = ftx_file_read(fh, (uint8_t *)g_io_buf, g_io_bufsize);
+        blk = g_xfer_cancel ? 0 : ftx_file_read(fh, (uint8_t *)g_io_buf,
+                                                g_io_bufsize);
         if (blk <= 0) {
-            /* The server is waiting for DATA: end the transfer with an error
-             * and take its reply, or the next request is read as part of
-             * this upload. */
+            /* Read error or Esc. The server is waiting for DATA: end the
+             * transfer with an error and take its reply, or the next request
+             * is read as part of this upload. */
             ftx_file_close(fh);
             end.cmd = FTX_CMD_END;
             end.total_chunks = chunk;
@@ -441,7 +456,7 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
             if (pkt_send(&g_pkt, (const uint8_t *)&end, sizeof(end)) >= 0) {
                 sfs_wait_ok();
             }
-            return -1;
+            return g_xfer_cancel ? SFS_CANCEL : -1;
         }
         for (off = 0; off < (uint16_t)blk; off += FTX_CHUNK_SIZE) {
             uint16_t slice = (uint16_t)blk - off;
@@ -467,6 +482,13 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
             }
             chunk++;
             ui_progress_tick(chunk, total);
+            /* The chunk's ACK is in and the server waits for the next one,
+             * so the DOS keyboard check here cannot cost received bytes. An
+             * Esc after the last chunk is left for the caller to see. */
+            if (chunk < total && sfs_tree_cancelled()) {
+                g_xfer_cancel = TRUE;
+                break;
+            }
         }
     }
     ftx_file_close(fh);
@@ -643,7 +665,8 @@ static uint16_t g_walk_cap = 0;     /* arena capacity, in entries        */
 static uint16_t g_walk_used = 0;    /* entries currently live (all levels) */
 static uint8_t  g_tree_depth = 0;   /* recursion guard for tree ops       */
 
-/* ESC between files aborts a tree op (each file already has its own bar). */
+/* TRUE if Esc was pressed: checked between files of a tree op and between
+ * chunks of a single file. */
 static bool_t sfs_tree_cancelled(void)
 {
     if (kbd_check()) {
@@ -770,8 +793,11 @@ static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
 
         if (attr & DOS_ATTR_DIRECTORY) {
             result = sfs_get_tree_r(rchild, lchild);
-        } else if (serialfs_get_file(rchild, lchild) != 0) {
-            result = -1;
+        } else {
+            result = serialfs_get_file(rchild, lchild);
+            if (result != 0 && result != SFS_CANCEL) {
+                result = -1;
+            }
         }
 
         if (result == 0 && sfs_tree_cancelled()) {

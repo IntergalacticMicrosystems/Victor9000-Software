@@ -251,16 +251,16 @@ void ui_draw_panel_row(Panel *p, uint8_t x_offset, bool_t active, uint16_t file_
         attr = ATTR_DIM;
     }
 
-    /* Draw selection star (if selected and not cursor) */
-    if (f->selected && !is_cursor) {
-        scr_putc_xy(x_offset + 1, row, '*', ATTR_DIM);
+    /* Draw selection star (in reverse video on the cursor row) */
+    if (f->selected) {
+        scr_putc_xy(x_offset + 1, row, '*', attr);
     }
 
     /* Draw name (directories with angle brackets) */
     if (file_is_dir(f)) {
         char dir_name[16];
         dir_name[0] = '<';
-        str_copy_n(&dir_name[1], f->name, 12);
+        str_copy_n(&dir_name[1], f->name, 13);  /* 12 chars + NUL */
         str_copy(dir_name + str_len(dir_name), ">");
         scr_puts_n_xy(x_offset + 2, row, dir_name, 14, attr);
     } else {
@@ -301,19 +301,16 @@ void ui_draw_panel(Panel *p, uint8_t x_offset, bool_t active)
         ui_draw_panel_row(p, x_offset, active, file_idx);
     }
 
-    /* Show truncation indicator */
-    if (p->files.truncated) {
-        scr_puts_xy(x_offset + 2, ROW_FILES_END, "[...more files]", ATTR_DIM);
-    }
-
-    /* Show file count on bottom border */
+    /* Show file count on bottom border; "+" marks a truncated listing
+       (drawing a notice in the file area would hide the last row) */
     {
         char count_buf[20];
         /* Clear area with horizontal lines first to remove old text */
         scr_hline(x_offset + 1, ROW_BOT_BORDER, 15, BOX_HORIZ, ATTR_DIM);
         /* Format and draw the count */
         num_format(count_buf, p->files.count);
-        str_copy(count_buf + str_len(count_buf), " files");
+        str_copy(count_buf + str_len(count_buf),
+                 p->files.truncated ? "+ files" : " files");
         scr_puts_xy(x_offset + 2, ROW_BOT_BORDER, count_buf, ATTR_DIM);
     }
 }

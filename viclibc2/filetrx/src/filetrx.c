@@ -134,7 +134,10 @@ void ftx_abort(ftx_state_t *state)
     abort.reason = (uint8_t)(-state->last_error);
     abort.message[0] = '\0';
 
-    pkt_send_raw(state->pkt, PKT_TYPE_DATA, (uint8_t *)&abort, sizeof(abort));
+    /* Sequenced and ACKed like any data packet: a raw send always carries
+     * sequence bit 0, which the peer drops as a duplicate half the time.
+     * Only cmd, reason and the empty message's NUL go on the wire. */
+    pkt_send(state->pkt, (uint8_t *)&abort, 3);
 
     /* Close any open file */
     if (state->file_handle != FTX_FILE_INVALID) {

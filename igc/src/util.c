@@ -280,7 +280,6 @@ void num_format(char *buf, uint32_t num)
     char temp[15];
     int i = 0;
     int j = 0;
-    int digits = 0;
 
     if (num == 0) {
         buf[0] = '0';
@@ -292,14 +291,13 @@ void num_format(char *buf, uint32_t num)
     while (num > 0) {
         temp[i++] = '0' + (char)(num % 10L);
         num /= 10L;
-        digits++;
     }
 
     /* Copy with commas */
     while (i > 0) {
         i--;
         buf[j++] = temp[i];
-        if (i > 0 && (digits - i) % 3 == 0) {
+        if (i > 0 && i % 3 == 0) {      /* i digits still to copy */
             buf[j++] = ',';
         }
     }

@@ -49,14 +49,16 @@ bool_t serialfs_is_connected(void);
 /* Fill p->files from the server's listing of p->path. Returns 0 on success. */
 int serialfs_read_dir(Panel *p);
 
-/* Download remote_rel (relative to the served root) to a local DOS path. */
+/* Download remote_rel (relative to the served root) to a local DOS path.
+ * Returns 0, -1, or SFS_CANCEL if Esc stopped it. */
 int serialfs_get_file(const char *remote_rel, const char *local_path);
 
-/* Upload a local DOS file to remote_rel (relative to the served root). */
+/* Upload a local DOS file to remote_rel (relative to the served root).
+ * Returns 0, -1, or SFS_CANCEL if Esc stopped it. */
 int serialfs_put_file(const char *local_path, const char *remote_rel);
 
-/* Returned by the tree operations below when the user pressed Esc (distinct
- * from every FOPS_* code, and nonzero like a failure). */
+/* Returned by the file and tree operations when the user pressed Esc
+ * (distinct from every FOPS_* code, and nonzero like a failure). */
 #define SFS_CANCEL  1
 
 /* Recursively copy a whole directory tree (single or nested) between the server

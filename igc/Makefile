@@ -59,6 +59,9 @@ VIC_CFLAGS = $(CFLAGS) -zp1 $(VIC_INC)
 # serialfs.c (in src/) includes the viclibc headers, so it needs their path.
 CFLAGS += $(VIC_INC)
 
+# A protocol change in a viclibc header must rebuild both sides of the wire
+VIC_HDRS = $(wildcard $(VICLIBC)/serial/include/*.h $(VICLIBC)/filetrx/include/*.h)
+
 # viclibc2 is polled-only (no serial_buffer.c / serial_isr.c). ftx_server.c is
 # omitted: igc is a client and never calls ftx_serve*, the only symbols it defines.
 VIC_SERIAL_SRCS  = serial.c serial_hw.c packet.c
@@ -113,17 +116,17 @@ $(BINDIR)/$(TARGET).exe: $(OBJS) $(VIC_OBJS)
 
 # Compile pattern rule. Every object depends on every header - with 13
 # files a few spurious rebuilds beat maintaining per-file lists by hand.
-$(OBJDIR)/%.obj: $(SRCDIR)/%.c $(SRCDIR)/*.h | dirs
+$(OBJDIR)/%.obj: $(SRCDIR)/%.c $(SRCDIR)/*.h $(VIC_HDRS) | dirs
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -fo=$@ $<
 
 # viclibc objects: built -zp1 with the viclibc include paths. Two rules for the
 # two source dirs; make picks whichever prerequisite exists.
-$(OBJDIR)/vic_%.obj: $(VICLIBC)/serial/src/%.c | dirs
+$(OBJDIR)/vic_%.obj: $(VICLIBC)/serial/src/%.c $(VIC_HDRS) | dirs
 	@echo "Compiling viclibc $<..."
 	$(CC) $(VIC_CFLAGS) -fo=$@ $<
 
-$(OBJDIR)/vic_%.obj: $(VICLIBC)/filetrx/src/%.c | dirs
+$(OBJDIR)/vic_%.obj: $(VICLIBC)/filetrx/src/%.c $(VIC_HDRS) | dirs
 	@echo "Compiling viclibc $<..."
 	$(CC) $(VIC_CFLAGS) -fo=$@ $<
 

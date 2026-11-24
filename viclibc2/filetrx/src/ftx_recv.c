@@ -261,17 +261,8 @@ retry_recv:
     ftx_update_stats(state, write_len);
     state->current_chunk++;
 
-    /* Per-chunk credit: the chunk is now committed to disk and we are about to
-     * loop back for the next one, so tell the sender it may proceed. Sent only
-     * in flow-control mode; the credit is a normal reliable packet (the packet
-     * layer ACKs/retransmits it), so the sender's matching wait can't miss it
-     * short of a dead link. This is what keeps the sender off the wire during
-     * the (possibly multi-second) ftx_file_write above, so its next chunk never
-     * streams into the 3-byte RX FIFO while we're busy. */
-    if (state->flow_ctrl) {
-        send_ready(state, 0);
-    }
-
+    /* The per-chunk credit is sent by recv_data_loop, after the progress
+     * callback. */
     return FTX_OK;
 }
 
@@ -345,14 +336,13 @@ static int recv_data_loop(ftx_state_t *state, ftx_progress_fn progress)
             return FTX_ERR_ABORT;
         }
 
-        /* Progress/stats. ftx_get_ticks() is an INT 21h (AH=2Ch) DOS call, and
-         * this point sits in the critical line turnaround: the sender has just
-         * been released by our per-chunk credit and is already streaming the
-         * next chunk into the 3-byte RX FIFO. Spending DOS-call time here makes
-         * us miss the frame start (dropped byte / FIFO overrun -> NAK -> a wasted
-         * full-chunk retransmit, ~2x slower putfile). So only pay it when a
-         * progress callback actually consumes the elapsed time; otherwise defer
-         * it to the end. Keeps us re-armed for the next chunk in microseconds. */
+        /* Progress/stats. ftx_get_ticks() is an INT 21h (AH=2Ch) DOS call. In
+         * flow-control mode the sender is still waiting for the credit below,
+         * so the callback's DOS calls cannot overrun the 3-byte RX FIFO, and
+         * an abort replaces the credit with nothing else in flight. Without
+         * flow control the sender is already streaming the next chunk and any
+         * DOS-call time here risks a dropped frame start (NAK + retransmit),
+         * so only pay it when a progress callback consumes the elapsed time. */
         if (progress != (ftx_progress_fn)0) {
             state->stats.elapsed_ticks = ftx_get_ticks() - state->stats.start_ticks;
             if (progress(state, &state->stats) != 0) {
@@ -360,6 +350,17 @@ static int recv_data_loop(ftx_state_t *state, ftx_progress_fn progress)
                 ftx_abort(state);
                 return FTX_ERR_ABORT;
             }
+        }
+
+        /* Per-chunk credit: the chunk is committed to disk, so tell the sender
+         * it may proceed. Sent only in flow-control mode; the credit is a
+         * normal reliable packet (the packet layer ACKs/retransmits it), so the
+         * sender's matching wait can't miss it short of a dead link. This keeps
+         * the sender off the wire during the (possibly multi-second) flush in
+         * recv_data_packet, so its next chunk never streams into the FIFO while
+         * we're busy. */
+        if (state->flow_ctrl) {
+            send_ready(state, 0);
         }
     }
 

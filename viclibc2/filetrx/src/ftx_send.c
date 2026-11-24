@@ -290,8 +290,7 @@ static int send_stream(ftx_state_t *state, ftx_progress_fn progress)
 
         if (progress != (ftx_progress_fn)0) {
             if (progress(state, &state->stats) != 0) {
-                ftx_abort(state);
-                goto abort_transfer;
+                goto abort_transfer;            /* which sends the ABORT */
             }
         }
     }

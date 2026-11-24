@@ -939,6 +939,13 @@ static void editor_run(void)
                     paste_line();
                     break;
 
+                case KEY_ESC:   /* leaves View; in Edit, F7 asks first */
+                    g_last_was_cut = FALSE;
+                    if (g_editor.readonly) {
+                        running = FALSE;
+                    }
+                    break;
+
                 default:
                     g_last_was_cut = FALSE;
                     if (key.code >= 32 && key.code < 127) {
