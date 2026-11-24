@@ -67,7 +67,8 @@ DTA __far *dos_get_dta(void);
 /* Set DTA */
 void dos_set_dta(DTA *dta);
 
-/* Find first file (returns 0 on success) */
+/* Find first file (returns 0 on success, else the DOS error code: 2 or 18
+ * when nothing matches, others for a missing path or a read error) */
 int dos_find_first(const char *pattern, uint8_t attr);
 
 /* Find next file (returns 0 on success) */

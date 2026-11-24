@@ -375,6 +375,34 @@ def main():
         check("path-qualified upload created nested file",
               (rootp / 'TREE' / 'DEEP' / 'LEAF.BIN').read_bytes() == tree_payload)
 
+        # igc sends "\NAME" for a file at the root, whatever cwd is.
+        igc_upload(pkt, b'root file', '\\ROOTQ.TXT')
+        check("root-qualified upload ignores cwd",
+              (rootp / 'ROOTQ.TXT').read_bytes() == b'root file'
+              and not (rootp / 'SUB' / 'ROOTQ.TXT').exists())
+
+        # An unreadable directory must fail LIST and leave cwd alone, so igc
+        # stays on the directory it came from.
+        (rootp / 'LOCKED').mkdir()
+        real_listdir = os.listdir
+
+        def deny_locked(path='.'):
+            if Path(path) == rootp / 'LOCKED':
+                raise PermissionError("denied")
+            return real_listdir(path)
+        igc_list(pkt, 'SUB')
+        igcfs.os.listdir = deny_locked
+        try:
+            try:
+                igc_list(pkt, 'LOCKED')
+                listed = True
+            except Exception:
+                listed = False
+        finally:
+            igcfs.os.listdir = real_listdir
+        check("unreadable dir: LIST fails", not listed)
+        check("unreadable dir: cwd unchanged", server.cwd == 'SUB')
+
         # --- mkdir / rename / delete (explicit relative paths) ---
         ok, _ = igc_simple(pkt, bytes([CMD_MKDIR]) + _p('MADE'))
         check("mkdir MADE", ok and (rootp / 'MADE').is_dir())

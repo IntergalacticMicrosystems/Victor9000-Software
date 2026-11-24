@@ -52,8 +52,7 @@ int serialfs_read_dir(Panel *p);
 /* Download remote_rel (relative to the served root) to a local DOS path. */
 int serialfs_get_file(const char *remote_rel, const char *local_path);
 
-/* Upload a local DOS file. The server stores it (under its basename) in the
- * directory igc last listed - i.e. the serial panel's current directory. */
+/* Upload a local DOS file to remote_rel (relative to the served root). */
 int serialfs_put_file(const char *local_path, const char *remote_rel);
 
 /* Recursively copy a whole directory tree (single or nested) between the server
@@ -78,9 +77,8 @@ void serialfs_build_rel(Panel *p, const char *name, char *buf);
 
 /* Disk image jobs (SFS_CMD_IMG_*, see serialfs_proto.h). Each returns NULL on
  * success or a message for the user. open: create=TRUE pushes a new image
- * named name (bare 8.3, stored in the serial panel's dir) of *total_sectors;
- * create=FALSE reads the image at server-relative path name and sets
- * *total_sectors. close(ok=FALSE) tells the server to discard the job. */
+ * of *total_sectors to server-relative path name; create=FALSE reads the
+ * image at server-relative path name and sets *total_sectors. close(ok=FALSE) tells the server to discard the job. */
 const char *serialfs_img_open(bool_t create, const char *name,
                               uint16_t *total_sectors);
 const char *serialfs_img_put_track(uint8_t track, const uint8_t __far *buf,

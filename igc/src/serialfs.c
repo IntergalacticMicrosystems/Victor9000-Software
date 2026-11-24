@@ -38,6 +38,11 @@ static ftx_state_t g_ftx;
 static bool_t      g_connected = FALSE;
 static uint8_t     g_port = SERIALFS_PORT_A;   /* port of the last successful connect */
 
+/* The server stores a bare-name upload in the directory of its last good
+ * LIST. g_listed is that directory as of the last LIST igc saw complete (no
+ * leading backslash, "" = root), or "?" when it is unknown. */
+static char g_listed[FTX_MAX_FILENAME] = "?";
+
 /* Scratch buffer for building/reading short control packets. Allocated on the
  * far heap in serialfs_connect (not held in DGROUP) and freed in
  * serialfs_disconnect; every user is guarded by g_connected, so it is always
@@ -67,8 +72,9 @@ bool_t serialfs_connect(uint8_t port, uint8_t baud_idx)
     if (g_connected) {
         serialfs_disconnect();
     }
+    str_copy(g_listed, "?");
 
-    ser_init_one(port);                 /* this channel only: the mouse driver
+    ser_init_one(port);                /* this channel only: the mouse driver
                                            may own the other one (8N1) */
     ser_set_baud(port, baud_idx);
     pkt_init_polled(&g_pkt, port);      /* polled mode - no ISR on this port */
@@ -141,6 +147,19 @@ bool_t serialfs_is_connected(void)
 /*---------------------------------------------------------------------------
  * Directory listing
  *---------------------------------------------------------------------------*/
+
+/* Every LIST goes through here so g_listed stays true. */
+static int sfs_list(const char *rel, ftx_dir_callback cb, void *user_data)
+{
+    int rc = ftx_list_dir(&g_ftx, rel, cb, user_data);
+
+    if (rel[0] == '\\') {
+        rel++;
+    }
+    str_copy(g_listed, (rc < 0 || str_len(rel) >= FTX_MAX_FILENAME) ? "?" : rel);
+    return rc;
+}
+
 typedef struct {
     Panel   *p;
     uint16_t count;
@@ -204,7 +223,7 @@ int serialfs_read_dir(Panel *p)
     ctx.p = p;
     ctx.count = 0;
     ctx.overflow = FALSE;
-    rc = ftx_list_dir(&g_ftx, p->path, sfs_list_cb, &ctx);
+    rc = sfs_list(p->path, sfs_list_cb, &ctx);
 
     p->files.count = ctx.count;
     p->files.truncated = ctx.overflow;
@@ -308,8 +327,8 @@ int serialfs_get_file(const char *remote_rel, const char *local_path)
     return fops_commit(out, local_path);
 }
 
-/* Upload local_path, telling the server to store it as remote_name (a bare
- * 8.3 name) in the directory igc last listed (the serial panel's current dir).
+/* Upload local_path, telling the server to store it as remote_name: a path
+ * from the server root, or a bare name for the directory igc last listed.
  * Mirrors the corrected ftx_send_file flow but lets us name the destination
  * independently of the local (possibly temp) filename. */
 static int serialfs_put_named(const char *local_path, const char *remote_name)
@@ -344,17 +363,22 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
      * chunk. */
     sfs_xfer_begin(remote_name);
 
-    fsize = ftx_file_size(fh);
-
-    /* CRC-32 of the whole file (matches the server's verification). Read in big
-     * io-buffer blocks rather than 1 KB chunks - fewer, larger floppy reads. */
+    /* CRC-32 and size of the whole file (matches the server's verification).
+     * Read in big io-buffer blocks rather than 1 KB chunks - fewer, larger
+     * floppy reads. */
+    fsize = 0;
     fcrc = FTX_CRC32_INIT;
     while ((nread = ftx_file_read(fh, (uint8_t *)g_io_buf, g_io_bufsize)) > 0) {
         fcrc = ftx_crc32_update(fcrc, (uint8_t *)g_io_buf, (uint32_t)nread);
+        fsize += (uint32_t)nread;
     }
     fcrc ^= FTX_CRC32_INIT;
     ftx_file_get_datetime(fh, &fdate, &ftime);
-    ftx_file_seek(fh, 0, FTX_SEEK_SET);
+    /* A read error is not EOF: stop before START, while nothing is in flight. */
+    if (nread < 0 || ftx_file_seek(fh, 0, FTX_SEEK_SET) != 0) {
+        ftx_file_close(fh);
+        return -1;
+    }
 
     total = (uint16_t)((fsize + FTX_CHUNK_SIZE - 1) / FTX_CHUNK_SIZE);
 
@@ -405,7 +429,18 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
 
         blk = ftx_file_read(fh, (uint8_t *)g_io_buf, g_io_bufsize);
         if (blk <= 0) {
+            /* The server is waiting for DATA: end the transfer with an error
+             * and take its reply, or the next request is read as part of
+             * this upload. */
             ftx_file_close(fh);
+            end.cmd = FTX_CMD_END;
+            end.total_chunks = chunk;
+            end.bytes_sent = 0;
+            end.file_crc = 0;
+            end.status = FTX_STATUS_ERROR;
+            if (pkt_send(&g_pkt, (const uint8_t *)&end, sizeof(end)) >= 0) {
+                sfs_wait_ok();
+            }
             return -1;
         }
         for (off = 0; off < (uint16_t)blk; off += FTX_CHUNK_SIZE) {
@@ -454,11 +489,39 @@ static int serialfs_put_named(const char *local_path, const char *remote_name)
     return sfs_wait_ok();
 }
 
+/* Name to send for a file the server will store (an upload or a new image),
+ * or NULL if there is no safe one. The server puts a bare name in the
+ * directory it listed last, which need not be remote_rel's (a tree walk or a
+ * failed refresh moves it), so send the path from the server root, with a
+ * leading backslash for a file at the root. A path too long for the packet
+ * falls back to the bare name, but only while the server's directory is known
+ * to be remote_rel's. buf holds FTX_MAX_FILENAME + 1 chars. */
+static const char *sfs_store_name(const char *remote_rel, char *buf)
+{
+    if (str_len(remote_rel) >= FTX_MAX_FILENAME) {
+        const char *base = path_basename(remote_rel);
+        uint16_t dlen = (uint16_t)(base - remote_rel);     /* dir + '\' */
+
+        if (dlen == 0 || dlen - 1 != str_len(g_listed)) {
+            return (const char *)0;
+        }
+        str_copy_n(buf, remote_rel, dlen);                  /* drops the '\' */
+        return (str_cmp_i(buf, g_listed) == 0) ? base : (const char *)0;
+    }
+    if (str_find_last(remote_rel, '\\') != (char *)0) {
+        return remote_rel;
+    }
+    buf[0] = '\\';
+    str_copy(buf + 1, remote_rel);
+    return buf;
+}
+
 int serialfs_put_file(const char *local_path, const char *remote_rel)
 {
-    /* Only the final name matters: the server stores it in its current dir
-     * (the serial panel's directory), which is where remote_rel points. */
-    return serialfs_put_named(local_path, path_basename(remote_rel));
+    char name[FTX_MAX_FILENAME + 1];
+    const char *store = sfs_store_name(remote_rel, name);
+
+    return store ? serialfs_put_named(local_path, store) : -1;
 }
 
 /*---------------------------------------------------------------------------
@@ -673,7 +736,7 @@ static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
 
     /* Collect this directory's entries into the arena above the current mark. */
     base = g_walk_used;
-    if (ftx_list_dir(&g_ftx, remote_rel, sfs_walk_cb, &overflow) < 0) {
+    if (sfs_list(remote_rel, sfs_walk_cb, &overflow) < 0) {
         ui_error("Serial server not responding - run igcfs.exe on the host");
         kbd_wait();
         g_walk_used = base;
@@ -828,7 +891,7 @@ static int sfs_delete_tree_r(const char *remote_rel)
     }
 
     base = g_walk_used;
-    if (ftx_list_dir(&g_ftx, remote_rel, sfs_walk_cb, &overflow) < 0) {
+    if (sfs_list(remote_rel, sfs_walk_cb, &overflow) < 0) {
         ui_error("Serial server not responding - run igcfs.exe on the host");
         kbd_wait();
         g_walk_used = base;
@@ -952,11 +1015,15 @@ const char *serialfs_img_open(bool_t create, const char *name,
                               uint16_t *total_sectors)
 {
     uint16_t len;
+    char store[FTX_MAX_FILENAME + 1];
 
     if (!g_connected) {
         return "Serial server not connected";
     }
-    if (str_len(name) >= FTX_MAX_FILENAME) {
+    if (create) {
+        name = sfs_store_name(name, store);
+    }
+    if (name == (const char *)0 || str_len(name) >= FTX_MAX_FILENAME) {
         return "Remote path too long";
     }
     g_img_create = create;

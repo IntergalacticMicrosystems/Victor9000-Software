@@ -230,8 +230,18 @@ int panel_read_dir(Panel *p)
         count++;
     }
 
-    /* Find first file */
+    /* Find first file. A subdirectory always holds "." and "..", so finding
+     * nothing there means it is missing or unreadable. A root may be empty
+     * (no match: error 2 or 18), but any other error is a failed read. */
     result = dos_find_first(pattern, DOS_ATTR_DIRECTORY | DOS_ATTR_HIDDEN | DOS_ATTR_SYSTEM);
+    if (result != 0 &&
+        (!path_is_root(p->path) || (result != 2 && result != 18))) {
+        p->files.count = count;         /* just "..", so the user can leave */
+        p->cursor = 0;
+        p->top = 0;
+        ui_clear_status();
+        return -1;
+    }
 
     while (result == 0 && count < p->files.capacity) {
         /* Skip "." entry */
@@ -284,6 +294,36 @@ int panel_read_dir(Panel *p)
 }
 
 /*---------------------------------------------------------------------------
+ * panel_enter_path - Read newpath; if that fails, return to the old path
+ *
+ * Without this a failed read would leave the panel on a path it cannot show,
+ * and a serial server's cwd (set by its last good listing) on another one.
+ * Re-reading the old path restores both.
+ *---------------------------------------------------------------------------*/
+static int panel_enter_path(Panel *p, const char *newpath)
+{
+    char oldpath[MAX_PATH_LEN];
+    uint16_t old_cursor = p->cursor;
+    uint16_t old_top = p->top;
+
+    str_copy(oldpath, p->path);
+    str_copy(p->path, newpath);
+    p->cursor = 0;
+    p->top = 0;
+    if (panel_read_dir(p) == 0) {
+        return 0;
+    }
+
+    str_copy(p->path, oldpath);
+    p->cursor = old_cursor;
+    p->top = old_top;
+    if (panel_read_dir(p) == 0) {
+        ui_error("Cannot open directory");  /* the re-read cleared the first error */
+    }
+    return -1;
+}
+
+/*---------------------------------------------------------------------------
  * panel_change_dir - Change to directory
  *---------------------------------------------------------------------------*/
 int panel_change_dir(Panel *p, const char *dirname)
@@ -306,13 +346,7 @@ int panel_change_dir(Panel *p, const char *dirname)
         return -1;
     }
 
-    str_copy(p->path, newpath);
-
-    /* Reset cursor */
-    p->cursor = 0;
-    p->top = 0;
-
-    return panel_read_dir(p);
+    return panel_enter_path(p, newpath);
 }
 
 /*---------------------------------------------------------------------------
@@ -320,15 +354,15 @@ int panel_change_dir(Panel *p, const char *dirname)
  *---------------------------------------------------------------------------*/
 int panel_go_parent(Panel *p)
 {
+    char newpath[MAX_PATH_LEN];
+
     if (path_is_root(p->path)) {
         return 0;  /* Already at root */
     }
 
-    path_get_parent(p->path);
-    p->cursor = 0;
-    p->top = 0;
-
-    return panel_read_dir(p);
+    str_copy(newpath, p->path);
+    path_get_parent(newpath);
+    return panel_enter_path(p, newpath);
 }
 
 /*---------------------------------------------------------------------------

@@ -220,8 +220,9 @@ def _open_temp(dest):
             pass
 
 
-def build_dos_map(dirpath):
+def build_dos_map(dirpath, strict=False):
     """Return {DOSNAME: real_name} for dirpath, deterministic & collision-free.
+    An unreadable directory maps to {} unless strict, which re-raises.
 
     Caveat: the ~N collision numbering is derived from the directory's sorted
     real names at call time. If files are added or removed server-side between
@@ -230,6 +231,8 @@ def build_dos_map(dirpath):
     try:
         names = sorted(os.listdir(dirpath))
     except OSError:
+        if strict:
+            raise
         return {}
     mapping = {}
     used = set()
@@ -396,6 +399,9 @@ class IgcFileServer:
             real_dir = self._resolve(rel)
             if not real_dir.is_dir():
                 raise FileNotFoundError(rel)
+            # An unreadable directory is an error, not an empty listing:
+            # igc then stays on (and re-lists) the directory it came from.
+            mapping = build_dos_map(real_dir, strict=True)
         except Exception as e:
             log(f"  -> listdir failed: {e}")
             self._reply_error(Error.NOT_FOUND, str(e))
@@ -406,7 +412,6 @@ class IgcFileServer:
         entries = []
         if rel:  # offer ".." for navigation when not at the root
             entries.append(DirEntry(name='..', attr=ATTR_DIRECTORY))
-        mapping = build_dos_map(real_dir)
         for dosname, real in mapping.items():
             full = real_dir / real
             try:

@@ -253,7 +253,7 @@ int dos_find_first(const char *pattern, uint8_t attr)
 
     int86x(0x21, &regs, &regs, &sregs);
 
-    return regs.x.cflag ? -1 : 0;
+    return regs.x.cflag ? (int)regs.x.ax : 0;
 }
 
 /*---------------------------------------------------------------------------

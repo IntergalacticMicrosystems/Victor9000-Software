@@ -592,6 +592,13 @@ void diskimg_read_to_file(void)
         return;
     }
     str_upper(name);
+    /* A path would dodge the overwrite check below, which looks the name up
+     * in this panel. */
+    if (str_find_last(name, '\\') || str_find_last(name, '/') ||
+        str_find_last(name, ':')) {
+        dlg_alert("Error", "Enter a file name, not a path");
+        return;
+    }
     if (img_ext(name) == 0) {
         dlg_alert("Error", "Use .IMG or .RLE");
         return;
@@ -599,7 +606,7 @@ void diskimg_read_to_file(void)
     /* The server cannot be asked whether the name exists, but its listing is
      * what the serial panel shows, so check that instead. */
     if (serial) {
-        str_copy(path, name);       /* server stores it in the listed dir */
+        serialfs_build_rel(p, name, path);
         exists = panel_has_name(p, name);
     } else {
         path_build(path, p->drive, p->path, name);
