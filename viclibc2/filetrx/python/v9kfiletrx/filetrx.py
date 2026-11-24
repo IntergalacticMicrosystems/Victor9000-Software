@@ -252,7 +252,11 @@ class FileTransfer:
                         if flow_control:
                             self._wait_credit()
                         break
-                    except Exception:
+                    except Exception as e:
+                        # An ABORT in place of the credit is final: resending
+                        # would only put DATA on the wire for nobody.
+                        if isinstance(e, TransferError) and e.error_code == Error.ABORT:
+                            raise
                         self._stats.retries += 1
                         if retry == self.MAX_RETRIES - 1:
                             raise TransferError("Max retries exceeded",
@@ -749,7 +753,9 @@ class FileTransfer:
                     if flow_control:
                         self._wait_credit()
                     break
-                except Exception:
+                except Exception as e:
+                    if isinstance(e, TransferError) and e.error_code == Error.ABORT:
+                        raise           # receiver cancelled (see send_file)
                     self._stats.retries += 1
                     if retry == self.MAX_RETRIES - 1:
                         raise TransferError("Max retries exceeded", Error.TIMEOUT)
@@ -810,8 +816,18 @@ class FileTransfer:
 
     @staticmethod
     def _unix_to_dos_datetime(unix_time: float) -> tuple[int, int]:
-        """Convert Unix timestamp to DOS date/time."""
-        t = time.localtime(unix_time)
+        """Convert Unix timestamp to DOS date/time, clamped to the DOS range
+        1980-01-01 .. 2107-12-31 (the 7-bit year would otherwise wrap)."""
+        lo = ((1 << 5) | 1, 0)                              # 1980-01-01 00:00:00
+        hi = ((127 << 9) | (12 << 5) | 31, (23 << 11) | (59 << 5) | 29)
+        try:
+            t = time.localtime(unix_time)
+        except (OSError, OverflowError, ValueError):   # outside the C library's range
+            return lo if unix_time < 0 else hi
+        if t.tm_year < 1980:
+            return lo
+        if t.tm_year > 2107:
+            return hi
 
         # DOS date: bits 0-4=day, 5-8=month, 9-15=year-1980
         date = (t.tm_mday & 0x1F) | ((t.tm_mon & 0x0F) << 5) | \

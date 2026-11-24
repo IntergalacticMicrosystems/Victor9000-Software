@@ -96,9 +96,11 @@ directories too — a selected folder is copied recursively (single or nested) i
 either direction. The path is shown as `SERA:\...` or `SERB:\...`. Remote files are presented as
 uppercase 8.3 names (long/mixed-case names are mangled to `NAME~1.EXT`).
 
-Copying a file from the server over an existing local file asks before
-overwriting (Yes/No/All), like a local copy. Uploads and recursive directory
-copies overwrite silently — the server side cannot be probed per file.
+Copying a file over an existing file asks before overwriting (Yes/No/All) in
+either direction, like a local copy. For an upload igc checks the server
+panel's listing, so a name the panel had no room for is replaced without
+asking. Recursive directory copies merge and overwrite silently. On the PC,
+igcfs replaces read-only files too, directory merges included.
 
 The link runs **8N1 at 38400 baud over a 3-wire cable (no hardware flow control)**.
 
@@ -127,7 +129,7 @@ python3 -m venv .venv
 | `--root` | Directory to serve (server is sandboxed to it) |
 | `--dev` | Serial device (default `/dev/ttyUSB0`) |
 | `--baud` | Line rate (default 38400; must match the Victor's pane setting) |
-| `-v` | Verbose request log |
+| `-v` | Also log directory listings and per-track disk image progress |
 
 > **Cable note:** the link is 3-wire (TX/RX/GND). The Victor uses *polled* serial
 > and never toggles RTS, so hardware flow control does nothing; reliable

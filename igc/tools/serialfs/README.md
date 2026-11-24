@@ -79,7 +79,8 @@ python3 -m venv .venv
 - `--dev`        serial device (default `/dev/ttyUSB0`).
 - `--baud`       line rate (default 38400; must match igc's pane setting,
                  which is `SERIALFS_BAUD_DEFAULT` in `src/serialfs.h`).
-- `-v`           verbose request log.
+- `-v`           also log directory listings and per-track disk image progress
+                 (transfers, deletes, renames and errors are always logged).
 
 Files are presented to igc as uppercase 8.3 names (long/mixed-case names are
 mangled `NAME~1.EXT` deterministically). Supported from igc: browse, view/edit,

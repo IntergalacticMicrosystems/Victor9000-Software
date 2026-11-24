@@ -669,29 +669,35 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
                          g_file_current, g_file_count);
 
         if (src->backend == PANEL_SERIAL) {
-            /* Serial -> local (download) */
             serialfs_build_rel(src, f->name, remote);
             path_build(local, dst->drive, dst->path, f->name);
-            if (file_is_dir(f)) {
-                rc = serialfs_get_tree(remote, local);
-            } else {
-                /* Ask before clobbering an existing local file, matching the
-                   local copy path. (Uploads and tree merges still overwrite
-                   silently - the server side can't be probed cheaply.) */
-                if (dos_exists(local) && !g_overwrite_all) {
-                    int ow = dlg_overwrite(path_basename(local));
-                    if (ow == DLG_NO) {
-                        if (selected == 0) break;
-                        continue;
-                    } else if (ow == 'A') {
-                        g_overwrite_all = 1;
-                    } else if (ow != DLG_YES) {
-                        result = FOPS_CANCEL;
-                        break;
-                    }
-                }
-                rc = serialfs_get_file(remote, local);
+        } else {
+            path_build(local, src->drive, src->path, f->name);
+            serialfs_build_rel(dst, f->name, remote);
+        }
+
+        /* Ask before replacing an existing file, matching the local copy
+           path. For an upload the server panel's listing shows what would be
+           replaced. A directory merges into an existing one without asking. */
+        if (!file_is_dir(f) && !g_overwrite_all &&
+            (src->backend == PANEL_SERIAL ? dos_exists(local)
+                                          : panel_has_name(dst, f->name))) {
+            int ow = dlg_overwrite(f->name);
+            if (ow == DLG_NO) {
+                if (selected == 0) break;
+                continue;
+            } else if (ow == 'A') {
+                g_overwrite_all = 1;
+            } else if (ow != DLG_YES) {
+                result = FOPS_CANCEL;
+                break;
             }
+        }
+
+        if (src->backend == PANEL_SERIAL) {
+            /* Serial -> local (download) */
+            rc = file_is_dir(f) ? serialfs_get_tree(remote, local)
+                                : serialfs_get_file(remote, local);
             if (rc == 0 && move) {
                 rc = file_is_dir(f) ? serialfs_delete_tree(remote)
                                     : serialfs_delete(remote);
@@ -699,13 +705,8 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
             }
         } else {
             /* Local -> serial (upload) */
-            path_build(local, src->drive, src->path, f->name);
-            serialfs_build_rel(dst, f->name, remote);
-            if (file_is_dir(f)) {
-                rc = serialfs_put_tree(local, remote);
-            } else {
-                rc = serialfs_put_file(local, remote);
-            }
+            rc = file_is_dir(f) ? serialfs_put_tree(local, remote)
+                                : serialfs_put_file(local, remote);
             if (rc == 0 && move) {
                 /* These report their own errors and return FOPS_* codes. */
                 rc = file_is_dir(f) ? fops_delete_dir(local)

@@ -40,8 +40,10 @@ Run:
 
 import argparse
 import math
+import ntpath
 import os
 import secrets
+import stat
 import struct
 import sys
 import time
@@ -59,7 +61,8 @@ from v9kfiletrx import (
 )
 from v9kfiletrx.compress import rle_decompress, compress_if_beneficial
 from v9kfiletrx.protocol import (CHUNK_SIZE, DATA_FLAG_COMPRESSED, START_FLAG_FLOWCTRL,
-                                 READY_CAP_FLOWCTRL, ResendPacket, ErrorPacket, parse_packet)
+                                 READY_CAP_FLOWCTRL, ResendPacket, ErrorPacket, AbortPacket,
+                                 parse_packet)
 import v9kimage
 
 # --- igc protocol extension (must match igc/src/serialfs_proto.h) -------------
@@ -156,6 +159,10 @@ def _rate(nbytes, secs):
 # ---------------------------------------------------------------------------
 
 _DOS_OK = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#$%&'()-@^_`{}~")
+# DOS opens a device for these base names whatever the extension (AUX.OLD is
+# the AUX port), so such an entry always gets a ~N alias.
+_DOS_DEVICES = {'CON', 'PRN', 'AUX', 'NUL', 'CLOCK$',
+                'COM1', 'COM2', 'COM3', 'COM4', 'LPT1', 'LPT2', 'LPT3'}
 
 
 def _clean(part, maxlen):
@@ -182,22 +189,21 @@ def _dos_remote_name(name):
     return name[:idx + 1] + name[idx + 1:][:12]
 
 
-def _short_name(real_name, is_dir):
-    """Best-effort 8.3 form of a single filename (no collision handling)."""
-    if is_dir:
-        base, ext = real_name, ''
+def _short_name(real_name):
+    """Best-effort 8.3 form of a single file or directory name (no collision
+    handling). DOS directories take an extension too, e.g. SRC.OLD."""
+    dot = real_name.rfind('.')
+    if dot > 0:
+        base, ext = real_name[:dot], real_name[dot + 1:]
     else:
-        dot = real_name.rfind('.')
-        if dot > 0:
-            base, ext = real_name[:dot], real_name[dot + 1:]
-        else:
-            base, ext = real_name, ''
+        base, ext = real_name, ''
     base8 = _clean(base, 8)
     ext3 = _clean(ext, 3)
     if not base8:
         base8 = 'FILE'
     fits = (real_name.upper() == (base8 + ('.' + ext3 if ext3 else '')) and
-            len(_clean(base, 9)) <= 8 and len(_clean(ext, 4)) <= 3)
+            len(_clean(base, 9)) <= 8 and len(_clean(ext, 4)) <= 3 and
+            base8 not in _DOS_DEVICES)
     return base8, ext3, fits
 
 
@@ -220,6 +226,29 @@ def _open_temp(dest):
             pass
 
 
+def _replace(tmp, dest):
+    """os.replace, also over a read-only file. igc asks before a single-file
+    upload or a new image replaces a file; a directory-tree upload merges
+    without asking, read-only files included. Windows refuses to replace a
+    read-only file (POSIX does not care), so clear the flag first, but only
+    on a plain file with no other hard links (they share the flag), and put
+    it back if the replace still fails (e.g. the file is open elsewhere)."""
+    try:
+        os.replace(tmp, dest)
+        return
+    except PermissionError:
+        st = os.lstat(dest) if os.name == 'nt' and os.path.lexists(dest) else None
+        if (st is None or not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or
+                not st.st_file_attributes & stat.FILE_ATTRIBUTE_READONLY):
+            raise
+    os.chmod(dest, stat.S_IWRITE)
+    try:
+        os.replace(tmp, dest)
+    except OSError:
+        os.chmod(dest, stat.S_IREAD)
+        raise
+
+
 def build_dos_map(dirpath, strict=False):
     """Return {DOSNAME: real_name} for dirpath, deterministic & collision-free.
     An unreadable directory maps to {} unless strict, which re-raises.
@@ -237,9 +266,7 @@ def build_dos_map(dirpath, strict=False):
     mapping = {}
     used = set()
     for real in names:
-        full = os.path.join(dirpath, real)
-        is_dir = os.path.isdir(full)
-        base8, ext3, fits = _short_name(real, is_dir)
+        base8, ext3, fits = _short_name(real)
         cand = base8 + ('.' + ext3 if ext3 else '')
         if not fits or cand in used:
             # Mangle with ~N until unique.
@@ -360,9 +387,9 @@ class IgcFileServer:
             else:
                 self.handle_download(start)
         elif cmd == CMD_DELETE:
-            self.handle_delete(self._req_path(payload))
+            self.handle_delete(payload)
         elif cmd == CMD_MKDIR:
-            self.handle_mkdir(self._req_path(payload))
+            self.handle_mkdir(payload)
         elif cmd == CMD_RENAME:
             self.handle_rename(payload)
         elif cmd == CMD_IMG_OPEN:
@@ -378,10 +405,16 @@ class IgcFileServer:
         else:
             log(f"  <- (unknown request 0x{cmd:02X})")
 
+    def _vlog(self, msg):
+        """Routine per-request detail, shown only with -v."""
+        if self.verbose:
+            log(msg)
+
     @staticmethod
     def _req_path(payload):
-        plen = payload[1]
-        return payload[2:2 + plen].decode('ascii', errors='replace')
+        if len(payload) < 2 or len(payload) < 2 + payload[1]:
+            raise ValueError("short packet")
+        return payload[2:2 + payload[1]].decode('ascii', errors='replace')
 
     def _reply_ok(self):
         self.pkt.send_packet(bytes([CMD_OK, 0]))
@@ -394,7 +427,7 @@ class IgcFileServer:
     def handle_list(self, payload):
         req = ListPacket.unpack(payload)
         rel = req.path.replace('\\', '/').strip('/')
-        log(f"  <- listdir {rel or '(root)'}")
+        self._vlog(f"  <- listdir {rel or '(root)'}")
         try:
             real_dir = self._resolve(rel)
             if not real_dir.is_dir():
@@ -435,7 +468,7 @@ class IgcFileServer:
                 page = entries[i:i + ENTRIES_PER_PACKET]
                 more = (i + ENTRIES_PER_PACKET) < len(entries)
                 self.pkt.send_packet(ListRespPacket(entries=page, more_entries=more).pack())
-        log(f"  -> {len(entries)} entries")
+        self._vlog(f"  -> {len(entries)} entries")
 
     # --- download (Victor pulls a file from us) ----------------------------
 
@@ -456,8 +489,11 @@ class IgcFileServer:
             self._reply_error(Error.NOT_FOUND, str(e))
             return
         t0 = time.time()
-        sent = self._send_file(src, os.path.basename(rel), start.compression)
-        log(f"  -> sent {sent} bytes{_rate(sent, time.time() - t0)}")
+        # ntpath splits on both '\\' and '/', whatever OS the server runs on
+        sent = self._send_file(src, ntpath.basename(rel.rstrip('\\/')),
+                               start.compression)
+        if sent is not None:
+            log(f"  -> sent {sent} bytes{_rate(sent, time.time() - t0)}")
 
     def _send_file(self, src, remote_name, compression=Compression.NONE):
         """START(metadata) -> READY -> DATA... -> END, the PC->Victor send the
@@ -508,6 +544,9 @@ class IgcFileServer:
                 raise
             if credits:
                 credit = parse_packet(self._receive_until(CREDIT_TIMEOUT))
+                if isinstance(credit, AbortPacket):   # Esc on the Victor
+                    log(f"  -> cancelled by igc after chunk {i + 1}/{total}")
+                    return None
                 if not isinstance(credit, ReadyPacket) or credit.status != 0:
                     raise IOError(f"no credit after chunk {i}/{total}: {credit}")
             if self.frame_gap:
@@ -583,6 +622,8 @@ class IgcFileServer:
         # Anything that fails before the data flows is a READY(status=1)
         # rejection, which the client already understands.
         try:
+            if dest_path.is_dir():      # fail now, not after the whole file
+                raise IsADirectoryError(f"{dest_path.name} is a directory")
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path, f = _open_temp(dest_path)
         except Exception as e:
@@ -597,8 +638,8 @@ class IgcFileServer:
                 while True:
                     pkt = self._parse(self.ft._recv_packet())
                     if isinstance(pkt, EndPacket):
-                        if pkt.status != Status.OK:
-                            raise IOError("sender reported error")
+                        if pkt.status != Status.OK:   # Esc or a read error
+                            raise IOError("stopped by igc")
                         break
                     if not isinstance(pkt, DataPacket):
                         raise IOError("expected DATA")
@@ -618,7 +659,7 @@ class IgcFileServer:
             mtime = FileTransfer._dos_to_unix_datetime(start.file_date, start.file_time)
             if mtime:
                 os.utime(tmp_path, (mtime, mtime))
-            os.replace(tmp_path, dest_path)
+            _replace(tmp_path, dest_path)
         except Exception as e:
             if tmp_path.exists():
                 tmp_path.unlink()
@@ -667,6 +708,9 @@ class IgcFileServer:
                 if resolved != self.root and self.root not in resolved.parents:
                     raise PermissionError("path escapes root")
             if mode == 0:
+                status = IMG_ST_OTHER
+                if dest.is_dir():       # fail now, not after reading the disk
+                    raise IsADirectoryError(f"{dest.name} is a directory")
                 status = IMG_ST_INVALID
                 v9kimage.track_count(total_sectors)
                 image = bytearray(total_sectors * v9kimage.SECTOR_SIZE)
@@ -716,7 +760,7 @@ class IgcFileServer:
             return
         job.received[track] = True
         if track % 10 == 9 or track == job.ntracks - 1:
-            log(f"  -> imgget track {track + 1}/{job.ntracks}")
+            self._vlog(f"  -> imgget track {track + 1}/{job.ntracks}")
 
     def handle_img_track(self, payload):
         """One fragment of a track the Victor is pushing (mode 0).
@@ -777,7 +821,7 @@ class IgcFileServer:
         job.cur_track, job.cur_frags = None, []
         self._reply_ok()
         if track % 10 == 9 or track == job.ntracks - 1:
-            log(f"  <- imgtrack {track + 1}/{job.ntracks}")
+            self._vlog(f"  <- imgtrack {track + 1}/{job.ntracks}")
 
     def handle_img_close(self, payload):
         if len(payload) < 6:
@@ -820,7 +864,7 @@ class IgcFileServer:
             tmp_path, f = _open_temp(job.dest)
             with f:
                 f.write(data)
-            os.replace(tmp_path, job.dest)
+            _replace(tmp_path, job.dest)
         except Exception as e:
             if tmp_path is not None and tmp_path.exists():
                 tmp_path.unlink()
@@ -834,9 +878,10 @@ class IgcFileServer:
 
     # --- delete / mkdir / rename ------------------------------------------
 
-    def handle_delete(self, rel):
-        log(f"  <- delete {rel}")
+    def handle_delete(self, payload):
         try:
+            rel = self._req_path(payload)
+            log(f"  <- delete {rel}")
             real_dir, real_name = self._resolve_dir_and_name(rel)
             target = real_dir / real_name
             if target.is_dir():
@@ -848,9 +893,10 @@ class IgcFileServer:
             log(f"  -> delete failed: {e}")
             self._reply_error(Error.FILE, str(e))
 
-    def handle_mkdir(self, rel):
-        log(f"  <- mkdir {rel}")
+    def handle_mkdir(self, payload):
         try:
+            rel = self._req_path(payload)
+            log(f"  <- mkdir {rel}")
             # An 8.3 alias of an existing entry maps to it, so mkdir reports
             # "exists" instead of creating a literal MYDOCU~1 beside it.
             real_dir, real_name = self._resolve_dir_and_name(rel)
@@ -866,13 +912,10 @@ class IgcFileServer:
             self._reply_error(Error.FILE, str(e))
 
     def handle_rename(self, payload):
-        old_len = payload[1]
-        old = payload[2:2 + old_len].decode('ascii', errors='replace')
-        i = 2 + old_len
-        new_len = payload[i]
-        new = payload[i + 1:i + 1 + new_len].decode('ascii', errors='replace')
-        log(f"  <- rename {old} -> {new}")
         try:
+            old = self._req_path(payload)
+            new = self._req_path(payload[1 + payload[1]:])   # [new_len][new]
+            log(f"  <- rename {old} -> {new}")
             old_dir, old_real = self._resolve_dir_and_name(old)
             # New name is a bare 8.3 name in the same directory.
             new = new.replace('\\', '/').strip('/')
@@ -918,7 +961,8 @@ def main(argv=None):
                     help="pause after each DATA frame on download so the polled "
                          "Victor can ACK and re-arm before the next chunk (e.g. "
                          "0.003 = 3ms); covers post-ACK turnaround without per-byte pacing")
-    ap.add_argument('-v', '--verbose', action='store_true')
+    ap.add_argument('-v', '--verbose', action='store_true',
+                    help="also log directory listings and per-track image progress")
     args = ap.parse_args(argv)
     if args.byte_delay > 0.0:
         args.pace = True

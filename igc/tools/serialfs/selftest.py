@@ -10,12 +10,16 @@ the full packet + FTX + dispatch path: RESET, list (incl. 8.3 mangling), upload,
 download, delete, mkdir, rename, and the disk-image job (IMG_OPEN..IMG_CLOSE).
 """
 
+import contextlib
+import io
 import math
 import os
 import random
+import stat
 import struct
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from v9kserial.connection import Connection
@@ -25,7 +29,7 @@ from v9kfiletrx import (
     ReadyPacket, ListPacket, ListRespPacket, FileTransfer, crc32,
 )
 from v9kfiletrx.protocol import (CHUNK_SIZE, DATA_FLAG_COMPRESSED, START_FLAG_FLOWCTRL,
-                                 READY_CAP_FLOWCTRL, parse_packet)
+                                 READY_CAP_FLOWCTRL, AbortPacket, parse_packet)
 from v9kfiletrx.compress import compress_if_beneficial, rle_decompress
 import igcfs
 from igcfs import IgcFileServer, CMD_DELETE, CMD_MKDIR, CMD_RENAME, CMD_OK, CMD_QUIT
@@ -459,6 +463,78 @@ def main():
         # --- sandbox escape rejected ---
         ok, _ = igc_simple(pkt, bytes([CMD_DELETE]) + _p('..\\..\\etc\\passwd'))
         check("sandbox escape rejected", not ok)
+
+        # --- a dotted directory keeps its DOS name, as on DOS ---
+        (rootp / 'SRC.OLD').mkdir()
+        (rootp / 'SRC.OLD' / 'A.TXT').write_bytes(b'a')
+        check("dotted directory listed as SRC.OLD",
+              'SRC.OLD' in {e['name'] for e in igc_list(pkt, '') if e['is_dir']})
+        check("list into SRC.OLD", 'A.TXT' in {e['name'] for e in igc_list(pkt, 'SRC.OLD')})
+        igc_list(pkt, '')
+
+        # --- a short request gets an ERROR reply, not silence ---
+        for what, payload in (("delete", bytes([CMD_DELETE])),
+                              ("mkdir", bytes([CMD_MKDIR, 9]) + b'AB'),
+                              ("rename", bytes([CMD_RENAME]) + _p('HELLO.TXT') + bytes([9]) + b'X')):
+            ok, cmd = igc_simple(pkt, payload)
+            check(f"short {what} request -> ERROR", not ok and cmd == Command.ERROR)
+        check("short rename changed nothing", (rootp / 'HELLO.TXT').exists())
+
+        # --- an upload replaces a read-only file (igc asks first). Only a real
+        #     test on Windows, where the read-only flag must be cleared; POSIX
+        #     replaces a read-only file anyway ---
+        ro = rootp / 'RO.TXT'
+        ro.write_bytes(b'old')
+        os.chmod(ro, stat.S_IREAD)
+        igc_upload(pkt, b'new content', 'RO.TXT')
+        check("upload replaces a read-only file", ro.read_bytes() == b'new content')
+
+        # --- a download's START names the bare file; an ABORT in place of a
+        #     credit ends it and the link stays usable ---
+        (rootp / 'SUB' / 'BIG.BIN').write_bytes(bytes(5000))
+        pkt.send_packet(StartPacket(direction=Direction.PC_TO_VICTOR,
+                                    filename='SUB\\BIG.BIN').pack())
+        start = parse_packet(pkt.receive_packet(timeout=5))
+        check("download START carries the bare name", start.filename == 'BIG.BIN')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            pkt.send_packet(ReadyPacket(status=0, caps=READY_CAP_FLOWCTRL).pack())
+            first = parse_packet(pkt.receive_packet(timeout=5))
+            pkt.send_packet(AbortPacket(reason=6).pack())
+            listed = 'HELLO.TXT' in {e['name'] for e in igc_list(pkt, '')}
+            time.sleep(0.2)
+        check("ABORT for a credit: next LIST works", isinstance(first, DataPacket) and listed)
+        check("ABORT for a credit is logged as a cancel, not a failure",
+              'cancelled by igc' in buf.getvalue() and 'request failed' not in buf.getvalue())
+
+        # --- an upload onto a directory's name fails before any data flows ---
+        pkt.send_packet(StartPacket(direction=Direction.VICTOR_TO_PC, file_size=5,
+                                    file_crc=crc32(b'xxxxx'), filename='\\SUB').pack())
+        ready = parse_packet(pkt.receive_packet(timeout=5))
+        check("upload onto a directory refused at READY",
+              isinstance(ready, ReadyPacket) and ready.status != 0 and (rootp / 'SUB').is_dir())
+
+        # --- DOS device names always get a ~N alias (AUX.OLD would be AUX) ---
+        check("device name AUX.OLD gets an alias", not igcfs._short_name('AUX.OLD')[2]
+              and not igcfs._short_name('con')[2] and igcfs._short_name('AUXFILE.TXT')[2])
+
+        # --- without -v, listings are not logged ---
+        for verbose in (False, True):
+            server.verbose = verbose
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                igc_list(pkt, '')
+                time.sleep(0.2)     # the server logs after its last reply
+            check(f"listing logged only with -v ({'on' if verbose else 'off'})",
+                  ('listdir' in buf.getvalue()) == verbose)
+
+        # --- DOS dates clamp to 1980..2107 instead of wrapping ---
+        lo, hi = ((1 << 5) | 1, 0), ((127 << 9) | (12 << 5) | 31, (23 << 11) | (59 << 5) | 29)
+        check("1975 mtime clamps to 1980-01-01", FileTransfer._unix_to_dos_datetime(1.7e8) == lo)
+        check("pre-1970 mtime clamps to 1980-01-01", FileTransfer._unix_to_dos_datetime(-2e8) == lo)
+        check("2200 mtime clamps to 2107-12-31", FileTransfer._unix_to_dos_datetime(7.3e9) == hi)
+        check("out-of-range future mtime clamps to 2107-12-31",
+              FileTransfer._unix_to_dos_datetime(1e18) == hi)
 
         # --- disk images: push (Victor reads its floppy into a file here) ---
         ss = make_test_image(v9kimage.SECTORS_SS, False)
