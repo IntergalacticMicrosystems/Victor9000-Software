@@ -854,7 +854,12 @@ class IgcFileServer:
             # An 8.3 alias of an existing entry maps to it, so mkdir reports
             # "exists" instead of creating a literal MYDOCU~1 beside it.
             real_dir, real_name = self._resolve_dir_and_name(rel)
-            (real_dir / real_name).mkdir()
+            target = real_dir / real_name
+            # An existing directory is success, so tree uploads can merge into
+            # it (an empty subdirectory would otherwise fail every re-upload).
+            # A file of that name is still an error.
+            if not target.is_dir():
+                target.mkdir()
             self._reply_ok()
         except Exception as e:
             log(f"  -> mkdir failed: {e}")

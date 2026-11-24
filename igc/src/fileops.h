@@ -62,6 +62,10 @@ const char *fops_stage(const char *dst, bool_t force);
 /* Replace dst with the staged file. Reports its own errors. Returns 0 or -1. */
 int fops_commit(const char *written, const char *dst);
 
+/* Create directory path, or accept an existing one. FALSE if it could not be
+ * created or is a file. */
+bool_t fops_make_dir(const char *path);
+
 /*---------------------------------------------------------------------------
  * Internal Helpers (exposed for progress display)
  *---------------------------------------------------------------------------*/

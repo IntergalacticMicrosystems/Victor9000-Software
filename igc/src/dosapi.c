@@ -266,7 +266,7 @@ int dos_find_next(void)
     regs.h.ah = 0x4F;
     int86(0x21, &regs, &regs);
 
-    return regs.x.cflag ? -1 : 0;
+    return regs.x.cflag ? (int)regs.x.ax : 0;
 }
 
 /*---------------------------------------------------------------------------

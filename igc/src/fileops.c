@@ -329,6 +329,23 @@ int fops_copy_file(const char *src, const char *dst)
 }
 
 /*---------------------------------------------------------------------------
+ * fops_make_dir - Create a directory, or accept one that already exists
+ *
+ * A file of that name is a failure: copying into it would fail on every
+ * child, or, for an empty tree, report success and let a move delete it.
+ *---------------------------------------------------------------------------*/
+bool_t fops_make_dir(const char *path)
+{
+    int16_t attr;
+
+    if (dos_mkdir(path) == 0) {
+        return TRUE;
+    }
+    attr = dos_get_attr(path);
+    return (attr >= 0 && (attr & DOS_ATTR_DIRECTORY)) ? TRUE : FALSE;
+}
+
+/*---------------------------------------------------------------------------
  * fops_copy_dir - Copy directory recursively
  *---------------------------------------------------------------------------*/
 int fops_copy_dir(const char *src, const char *dst)
@@ -339,6 +356,7 @@ int fops_copy_dir(const char *src, const char *dst)
     DTA __far *old_dta;
     bool_t failed = FALSE;
     int result = FOPS_OK;
+    int found;
 
     /* Copying a directory into itself would recurse endlessly: the new
        destination shows up in the live enumeration of the source */
@@ -356,12 +374,10 @@ int fops_copy_dir(const char *src, const char *dst)
     }
 
     /* Create destination directory */
-    if (dos_mkdir(dst) != 0) {
-        if (!dos_exists(dst)) {
-            ui_error("Cannot create directory");
-            kbd_wait();
-            return FOPS_ERROR;
-        }
+    if (!fops_make_dir(dst)) {
+        ui_error("Cannot create directory");
+        kbd_wait();
+        return FOPS_ERROR;
     }
 
     /* Build search pattern */
@@ -378,7 +394,8 @@ int fops_copy_dir(const char *src, const char *dst)
     dos_set_dta(&dta);
 
     /* Find first file */
-    if (dos_find_first(src_path, 0x37) == 0) {
+    found = dos_find_first(src_path, 0x37);
+    if (found == 0) {
         do {
             int rc;
 
@@ -424,13 +441,21 @@ int fops_copy_dir(const char *src, const char *dst)
                 failed = TRUE;
             }
 
-        } while (dos_find_next() == 0);
+        } while ((found = dos_find_next()) == 0);
     }
 
     /* Restore DTA */
     dos_set_dta(old_dta);
     g_dir_depth--;
 
+    /* The search must end with "no more files" (18); any other error is a
+       read error, the copy is incomplete, and a move must keep the source
+       (its delete pass could read the directory fine). */
+    if (result == FOPS_OK && found != 18) {
+        ui_error("Cannot read directory");
+        kbd_wait();
+        result = FOPS_ERROR;
+    }
     if (result == FOPS_OK && failed) {
         result = FOPS_ERROR;
     }
@@ -563,6 +588,16 @@ int fops_delete_dir(const char *path)
     return result;
 }
 
+/* TRUE if Esc is waiting in the keyboard buffer (other keys are dropped). */
+static bool_t esc_pressed(void)
+{
+    if (kbd_check()) {
+        KeyEvent key = kbd_get();
+        return (key.type == KEY_ASCII && key.code == KEY_ESC) ? TRUE : FALSE;
+    }
+    return FALSE;
+}
+
 /*---------------------------------------------------------------------------
  * count_selected_files - Count selected files in panel
  *---------------------------------------------------------------------------*/
@@ -611,6 +646,7 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
 
     for (i = 0; i < src->files.count; i++) {
         int rc;
+        const char *fail = "Serial transfer failed";
         f = panel_get_file(src, i);
         if (f == (FileEntry __far *)0) continue;
         if (selected > 0) {
@@ -622,6 +658,12 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
             if (selected == 0) break;
             continue;
         }
+        /* Esc between items stops the batch (a single serial file has no
+           cancel point of its own). */
+        if (g_file_current > 0 && esc_pressed()) {
+            result = FOPS_CANCEL;
+            break;
+        }
         g_file_current++;
         ui_show_progress(move ? "Moving" : "Copying", f->name,
                          g_file_current, g_file_count);
@@ -632,7 +674,6 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
             path_build(local, dst->drive, dst->path, f->name);
             if (file_is_dir(f)) {
                 rc = serialfs_get_tree(remote, local);
-                if (rc == 0 && move) serialfs_delete_tree(remote);
             } else {
                 /* Ask before clobbering an existing local file, matching the
                    local copy path. (Uploads and tree merges still overwrite
@@ -650,7 +691,11 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
                     }
                 }
                 rc = serialfs_get_file(remote, local);
-                if (rc == 0 && move) serialfs_delete(remote);
+            }
+            if (rc == 0 && move) {
+                rc = file_is_dir(f) ? serialfs_delete_tree(remote)
+                                    : serialfs_delete(remote);
+                fail = "Copied, but cannot delete it on the server";
             }
         } else {
             /* Local -> serial (upload) */
@@ -658,15 +703,28 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
             serialfs_build_rel(dst, f->name, remote);
             if (file_is_dir(f)) {
                 rc = serialfs_put_tree(local, remote);
-                if (rc == 0 && move) fops_delete_dir(local);
             } else {
                 rc = serialfs_put_file(local, remote);
-                if (rc == 0 && move) fops_delete_file(local);
+            }
+            if (rc == 0 && move) {
+                /* These report their own errors and return FOPS_* codes. */
+                rc = file_is_dir(f) ? fops_delete_dir(local)
+                                    : fops_delete_file(local);
+                if (rc == FOPS_CANCEL) {
+                    rc = SFS_CANCEL;
+                }
+                fail = (const char *)0;
             }
         }
+        if (rc == SFS_CANCEL) {
+            result = FOPS_CANCEL;
+            break;
+        }
         if (rc != 0) {
-            ui_error("Serial transfer failed");
-            kbd_wait();
+            if (fail != (const char *)0) {
+                ui_error(fail);
+                kbd_wait();
+            }
             result = FOPS_ERROR;
         }
 
@@ -689,6 +747,7 @@ static int fops_delete_serial(Panel *panel)
     uint16_t i;
     uint16_t selected;
     int result = FOPS_OK;
+    int rc;
 
     selected = count_selected_files(panel);
 
@@ -703,8 +762,11 @@ static int fops_delete_serial(Panel *panel)
         }
         serialfs_build_rel(panel, f->name, remote);
         ui_show_progress("Deleting", f->name, 0, 1);
-        if ((file_is_dir(f) ? serialfs_delete_tree(remote)
-                            : serialfs_delete(remote)) != 0) {
+        rc = file_is_dir(f) ? serialfs_delete_tree(remote)
+                            : serialfs_delete(remote);
+        if (rc == SFS_CANCEL) {
+            result = FOPS_CANCEL;
+        } else if (rc != 0) {
             ui_error("Cannot delete on server");
             kbd_wait();
             result = FOPS_ERROR;
@@ -725,10 +787,19 @@ static int fops_delete_serial(Panel *panel)
             serialfs_build_rel(panel, f->name, remote);
             g_file_current++;
             ui_show_progress("Deleting", f->name, g_file_current, g_file_count);
-            if ((file_is_dir(f) ? serialfs_delete_tree(remote)
-                                : serialfs_delete(remote)) != 0) {
+            rc = file_is_dir(f) ? serialfs_delete_tree(remote)
+                                : serialfs_delete(remote);
+            if (rc == SFS_CANCEL) {
+                result = FOPS_CANCEL;
+                break;
+            }
+            if (rc != 0) {
                 result = FOPS_ERROR;
             }
+        }
+        if (result == FOPS_ERROR) {
+            ui_error("Cannot delete some files on server");
+            kbd_wait();
         }
     }
 
@@ -891,6 +962,26 @@ int fops_copy(void)
 }
 
 /*---------------------------------------------------------------------------
+ * move_one - Move one entry: rename on the same drive, else copy and then
+ * delete the source. The delete's result counts: an Esc there cancels the
+ * batch, and a failure (already reported) is an error, not a moved file.
+ *---------------------------------------------------------------------------*/
+static int move_one(FileEntry __far *f, const char *src, const char *dst,
+                    bool_t same_drive)
+{
+    int rc;
+
+    if (same_drive && dos_rename(src, dst) == 0) {
+        return FOPS_OK;
+    }
+    rc = file_is_dir(f) ? fops_copy_dir(src, dst) : fops_copy_file(src, dst);
+    if (rc != FOPS_OK) {
+        return rc;
+    }
+    return file_is_dir(f) ? fops_delete_dir(src) : fops_delete_file(src);
+}
+
+/*---------------------------------------------------------------------------
  * fops_move - Move selected files to other panel
  *---------------------------------------------------------------------------*/
 int fops_move(void)
@@ -903,6 +994,7 @@ int fops_move(void)
     uint16_t i;
     uint16_t selected;
     int result = FOPS_OK;
+    int rc;
 
     /* Either panel on the serial server takes the serial transfer path. */
     if (src_panel->backend == PANEL_SERIAL || dst_panel->backend == PANEL_SERIAL) {
@@ -938,40 +1030,8 @@ int fops_move(void)
         g_file_count = 1;
         ui_show_progress("Moving", f->name, 0, 1);
 
-        /* Try rename first (fast if same drive) */
-        if (src_panel->drive == dst_panel->drive) {
-            if (dos_rename(src_path, dst_path) == 0) {
-                result = FOPS_OK;
-            } else {
-                /* Rename failed, fall back to copy+delete */
-                if (file_is_dir(f)) {
-                    result = fops_copy_dir(src_path, dst_path);
-                } else {
-                    result = fops_copy_file(src_path, dst_path);
-                }
-                if (result == FOPS_OK) {
-                    if (file_is_dir(f)) {
-                        fops_delete_dir(src_path);
-                    } else {
-                        fops_delete_file(src_path);
-                    }
-                }
-            }
-        } else {
-            /* Different drives - must copy+delete */
-            if (file_is_dir(f)) {
-                result = fops_copy_dir(src_path, dst_path);
-            } else {
-                result = fops_copy_file(src_path, dst_path);
-            }
-            if (result == FOPS_OK) {
-                if (file_is_dir(f)) {
-                    fops_delete_dir(src_path);
-                } else {
-                    fops_delete_file(src_path);
-                }
-            }
-        }
+        result = move_one(f, src_path, dst_path,
+                          (src_panel->drive == dst_panel->drive) ? TRUE : FALSE);
     } else {
         /* Move all selected files (already confirmed by fops_file_op) */
         g_file_count = selected;
@@ -986,27 +1046,10 @@ int fops_move(void)
             g_file_current++;
             ui_show_progress("Moving", f->name, g_file_current, g_file_count);
 
-            /* Try rename first */
-            if (src_panel->drive == dst_panel->drive &&
-                dos_rename(src_path, dst_path) == 0) {
-                continue;
-            }
-
-            /* Fall back to copy+delete */
-            if (file_is_dir(f)) {
-                result = fops_copy_dir(src_path, dst_path);
-            } else {
-                result = fops_copy_file(src_path, dst_path);
-            }
-
-            if (result == FOPS_OK) {
-                if (file_is_dir(f)) {
-                    fops_delete_dir(src_path);
-                } else {
-                    fops_delete_file(src_path);
-                }
-            } else if (result == FOPS_SKIP) {
-                result = FOPS_OK;
+            rc = move_one(f, src_path, dst_path,
+                          (src_panel->drive == dst_panel->drive) ? TRUE : FALSE);
+            if (rc == FOPS_CANCEL || rc == FOPS_ERROR) {
+                result = rc;            /* a later success must not hide it */
             }
         }
     }
@@ -1133,7 +1176,9 @@ int fops_mkdir(void)
     if (panel->backend == PANEL_SERIAL) {
         char remote[MAX_FULL_PATH];
         serialfs_build_rel(panel, name, remote);
-        if (serialfs_mkdir(remote) != 0) {
+        /* The server accepts an existing directory (tree copies merge into
+         * it), so check the listing for a name that is already there. */
+        if (panel_has_name(panel, name) || serialfs_mkdir(remote) != 0) {
             ui_error("Cannot create directory");
             kbd_wait();
             return FOPS_ERROR;

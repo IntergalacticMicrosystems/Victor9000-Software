@@ -71,7 +71,8 @@ void dos_set_dta(DTA *dta);
  * when nothing matches, others for a missing path or a read error) */
 int dos_find_first(const char *pattern, uint8_t attr);
 
-/* Find next file (returns 0 on success) */
+/* Find next file (returns 0 on success, 18 when there are no more files, or
+ * another DOS error code for a read error) */
 int dos_find_next(void);
 
 /* Get current directory for a drive (0=current, 1=A, etc.) */

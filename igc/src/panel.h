@@ -104,6 +104,10 @@ int panel_change_dir(Panel *p, const char *dirname);
 /* Go to parent directory */
 int panel_go_parent(Panel *p);
 
+/* TRUE if the panel's listing has an entry called name (case-insensitive).
+ * Serial panels use it in place of asking the server. */
+bool_t panel_has_name(Panel *p, const char *name);
+
 /* Set drive and read root */
 int panel_set_drive(Panel *p, uint8_t drive);
 

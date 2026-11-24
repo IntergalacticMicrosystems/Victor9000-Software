@@ -384,6 +384,21 @@ int panel_set_drive(Panel *p, uint8_t drive)
 }
 
 /*---------------------------------------------------------------------------
+ * panel_has_name - TRUE if the panel's listing has an entry called name
+ *---------------------------------------------------------------------------*/
+bool_t panel_has_name(Panel *p, const char *name)
+{
+    uint16_t i;
+
+    for (i = 0; i < p->files.count; i++) {
+        if (str_cmp_i(p->files.entries[i].name, name) == 0) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/*---------------------------------------------------------------------------
  * panel_get_cursor_file - Get file at cursor
  *---------------------------------------------------------------------------*/
 FileEntry __far *panel_get_cursor_file(Panel *p)

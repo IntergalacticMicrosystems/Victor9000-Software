@@ -499,19 +499,6 @@ static bool_t bufs_alloc(void)
     return FALSE;
 }
 
-/* TRUE if the panel's listing has an entry called name (uppercase 8.3). */
-static bool_t panel_has_name(Panel *p, const char *name)
-{
-    uint16_t i;
-
-    for (i = 0; i < p->files.count; i++) {
-        if (str_cmp(p->files.entries[i].name, name) == 0) {
-            return TRUE;
-        }
-    }
-    return FALSE;
-}
-
 /* ESC between tracks aborts (same pattern as the serial tree copy). */
 static bool_t esc_pressed(void)
 {

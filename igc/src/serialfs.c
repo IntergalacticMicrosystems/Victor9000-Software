@@ -728,7 +728,7 @@ static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
     }
 
     /* Create the local destination directory. */
-    if (dos_mkdir(local_path) != 0 && !dos_exists(local_path)) {
+    if (!fops_make_dir(local_path)) {
         ui_error("Cannot create directory");
         kbd_wait();
         return -1;
@@ -769,15 +769,13 @@ static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
         }
 
         if (attr & DOS_ATTR_DIRECTORY) {
-            if (sfs_get_tree_r(rchild, lchild) != 0) {
-                result = -1;
-            }
+            result = sfs_get_tree_r(rchild, lchild);
         } else if (serialfs_get_file(rchild, lchild) != 0) {
             result = -1;
         }
 
         if (result == 0 && sfs_tree_cancelled()) {
-            result = -1;
+            result = SFS_CANCEL;
         }
     }
     g_tree_depth--;
@@ -793,12 +791,15 @@ static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
  *---------------------------------------------------------------------------*/
 static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
 {
-    char src_child[MAX_FULL_PATH];
+    char src_child[MAX_FULL_PATH];  /* also the search pattern: DOS reads it
+                                       only at find-first (frames x depth 24
+                                       must fit the 8 KB stack) */
     char rchild[MAX_FULL_PATH];
-    char pattern[MAX_FULL_PATH];
     DTA dta;
     DTA __far *old_dta;
     int result = 0;
+    int found;
+    bool_t made;
 
     if (g_tree_depth >= SFS_TREE_MAX_DEPTH) {
         ui_error("Directory tree too deep");
@@ -815,12 +816,15 @@ static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
         return -1;
     }
 
-    /* Create the remote directory. Best effort: it may already exist, and file
-       uploads auto-create parents server-side; this also covers empty dirs. */
-    serialfs_mkdir(remote_rel);
+    /* Create the remote directory (igcfs accepts one that already exists;
+       an older igcfs refuses it). File uploads auto-create parents
+       server-side, so only an empty directory needs the MKDIR: it fails
+       below if neither the MKDIR nor any child got through, e.g. when a file
+       has that name. (A LIST probe would move the server's cwd.) */
+    made = (serialfs_mkdir(remote_rel) == 0) ? TRUE : FALSE;
 
-    str_copy(pattern, local_path);
-    if (!path_join(pattern, "*.*", MAX_FULL_PATH)) {
+    str_copy(src_child, local_path);
+    if (!path_join(src_child, "*.*", MAX_FULL_PATH)) {
         ui_error("Path too long");
         kbd_wait();
         return -1;
@@ -830,7 +834,8 @@ static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
     old_dta = dos_get_dta();
     dos_set_dta(&dta);
 
-    if (dos_find_first(pattern, 0x37) == 0) {
+    found = dos_find_first(src_child, 0x37);
+    if (found == 0) {
         do {
             if (dta.name[0] == '.' &&
                 (dta.name[1] == '\0' ||
@@ -854,15 +859,30 @@ static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
                 /* serialfs_put_named lays down the per-file progress bar. */
                 result = serialfs_put_named(src_child, rchild);
             }
+            if (result == 0) {
+                made = TRUE;
+            }
 
             if (result == 0 && sfs_tree_cancelled()) {
-                result = -1;
+                result = SFS_CANCEL;
             }
-        } while (result == 0 && dos_find_next() == 0);
+        } while (result == 0 && (found = dos_find_next()) == 0);
     }
 
     dos_set_dta(old_dta);
     g_tree_depth--;
+
+    /* A search that ends in anything but "no more files" (18) hit a read
+       error: the upload is incomplete, and a move must keep the source. */
+    if (result == 0 && found != 18) {
+        ui_error("Cannot read directory");
+        kbd_wait();
+        result = -1;
+    }
+    /* Neither MKDIR nor any child got through (the caller reports it). */
+    if (result == 0 && !made) {
+        result = -1;
+    }
     return result;
 }
 
@@ -923,15 +943,13 @@ static int sfs_delete_tree_r(const char *remote_rel)
 
         ui_show_progress("Deleting", name, 0, 1);
         if (attr & DOS_ATTR_DIRECTORY) {
-            if (sfs_delete_tree_r(rchild) != 0) {
-                result = -1;
-            }
+            result = sfs_delete_tree_r(rchild);
         } else if (serialfs_delete(rchild) != 0) {
             result = -1;
         }
 
         if (result == 0 && sfs_tree_cancelled()) {
-            result = -1;
+            result = SFS_CANCEL;
         }
     }
     g_tree_depth--;

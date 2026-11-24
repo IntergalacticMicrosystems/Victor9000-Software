@@ -611,8 +611,11 @@ def main():
         (rootp / 'My Documents').mkdir()
         igc_list(pkt, '')
         ok, _ = igc_simple(pkt, bytes([CMD_MKDIR]) + _p('MYDOCU~1'))
-        check("mkdir of existing 8.3 alias refused",
-              not ok and 'MYDOCU~1' not in os.listdir(rootp))
+        check("mkdir of existing 8.3 alias accepted, no sibling",
+              ok and 'MYDOCU~1' not in os.listdir(rootp))
+        ok, _ = igc_simple(pkt, bytes([CMD_MKDIR]) + _p('HELLO.TXT'))
+        check("mkdir over an existing file refused",
+              not ok and (rootp / 'HELLO.TXT').is_file())
         igc_upload(pkt, b'in alias', 'MYDOCU~1\\INALIAS.TXT')
         check("upload through alias lands in the real directory",
               (rootp / 'My Documents' / 'INALIAS.TXT').read_bytes() == b'in alias')
