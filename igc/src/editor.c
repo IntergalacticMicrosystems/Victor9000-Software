@@ -398,7 +398,7 @@ static void draw_line(uint16_t screen_row, uint16_t line)
     for (i = 0; i < EDIT_COLS && (g_editor.left_col + i) < len; i++) {
         c = g_editor.buffer[start + g_editor.left_col + i];
         if (c == '\t') c = ' ';
-        if (c < 32) c = '.';
+        if ((uint8_t)c < 32) c = '.';   /* char is signed (-j) */
         scr_putc_xy(EDIT_LEFT_COL + i, row, c, ATTR_DIM);
     }
 }
@@ -454,7 +454,8 @@ static void scroll_if_needed(void)
         g_editor.left_col = g_editor.cursor_col;
         need_redraw = TRUE;
     }
-    if (g_editor.cursor_col >= g_editor.left_col + EDIT_COLS) {
+    /* Subtract: left_col + EDIT_COLS wraps on a 64K line */
+    if (g_editor.cursor_col - g_editor.left_col >= EDIT_COLS) {
         g_editor.left_col = g_editor.cursor_col - EDIT_COLS + 1;
         need_redraw = TRUE;
     }
@@ -625,9 +626,8 @@ static void insert_char(char c)
     g_editor.cursor_col++;
     g_editor.modified = TRUE;
 
-    /* Redraw current line */
+    /* Redraw current line (editor_run redraws the status bar) */
     draw_line(g_editor.cursor_line - g_editor.top_line, g_editor.cursor_line);
-    draw_status_bar();
 }
 
 /*---------------------------------------------------------------------------
@@ -792,6 +792,7 @@ static void cut_line(void)
         g_editor.cursor_line = g_editor.total_lines - 1;
     }
     g_editor.cursor_col = 0;
+    g_editor.left_col = 0;      /* scroll back now: one repaint, not two */
 
     g_editor.modified = TRUE;
     g_last_was_cut = TRUE;  /* Mark that last action was cut */
@@ -1002,6 +1003,9 @@ static void editor_run(void)
             }
         }
 
+        /* Typing, Ctrl-K and clicks move the cursor without scrolling */
+        scroll_if_needed();
+        draw_status_bar();      /* L:C changes on every move */
         update_cursor();
     }
 
