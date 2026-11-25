@@ -148,6 +148,8 @@ void editor_shutdown(void)
 /*---------------------------------------------------------------------------
  * parse_lines - Build line offset table
  *---------------------------------------------------------------------------*/
+static bool_t g_line_limit;    /* parse_lines ran out of line slots */
+
 static void parse_lines(void)
 {
     uint32_t i;
@@ -164,6 +166,16 @@ static void parse_lines(void)
     }
 
     g_editor.total_lines = line;
+    /* Out of slots: any later line break (not just the file's final one)
+       means several lines share the last slot. The text stays in the
+       buffer and is saved; it just shows as one line. */
+    g_line_limit = FALSE;
+    for (; i + 1 < g_editor.buf_used; i++) {
+        if (g_editor.buffer[i] == '\n') {
+            g_line_limit = TRUE;
+            break;
+        }
+    }
 }
 
 /*---------------------------------------------------------------------------
@@ -246,22 +258,25 @@ static bool_t load_file(const char *filename)
 
 /*---------------------------------------------------------------------------
  * save_file - Save buffer to file
+ * Returns NULL on success, "" if the error was already shown, else the error.
  *---------------------------------------------------------------------------*/
-static bool_t save_file(void)
+static const char *save_file(void)
 {
     dos_handle_t h;
     int16_t bytes;
     uint32_t written = 0;
     const char *out;
+    int16_t attr = dos_get_attr(g_editor.filename);
+
+    if (attr >= 0 && (attr & DOS_ATTR_READONLY)) {
+        return "File is read-only - not saved";
+    }
 
     /* The original stays intact until the new copy is complete */
     out = fops_stage(g_editor.filename, FALSE);
-    if (out == (const char *)0) {
-        return FALSE;
-    }
-    h = dos_create(out, 0);
+    h = (out != (const char *)0) ? dos_create(out, 0) : -1;
     if (h < 0) {
-        return FALSE;
+        return "Cannot create file - not saved";
     }
 
     /* Write in chunks */
@@ -274,21 +289,21 @@ static bool_t save_file(void)
         if (bytes < 0 || (uint16_t)bytes < to_write) {
             dos_close(h);
             dos_delete(out);
-            return FALSE;
+            return "Save failed - disk full?";
         }
         written += bytes;
     }
 
     if (dos_close(h) != 0) {
         dos_delete(out);
-        return FALSE;
+        return "Save failed - disk full?";
     }
     if (fops_commit(out, g_editor.filename) != 0) {
-        return FALSE;
+        return "";                      /* fops_commit showed why */
     }
     g_editor.modified = FALSE;
 
-    return TRUE;
+    return (const char *)0;
 }
 
 /*---------------------------------------------------------------------------
@@ -989,13 +1004,13 @@ static void editor_run(void)
                     if (!g_editor.readonly) {
                         /* Redraw first - the message stays visible until
                            the next full repaint clears row 23 */
-                        bool_t saved = save_file();
+                        const char *err = save_file();
                         draw_screen();
-                        if (saved) {
+                        if (err == (const char *)0) {
                             g_saved_any = TRUE;
                             ui_status("File saved");
-                        } else {
-                            ui_error("Save failed - disk full?");
+                        } else if (err[0] != '\0') {
+                            ui_error(err);
                         }
                     }
                     break;
@@ -1021,6 +1036,21 @@ static void editor_run(void)
 }
 
 /*---------------------------------------------------------------------------
+ * line_limit_notice - Say why the last line holds the rest of the file
+ *---------------------------------------------------------------------------*/
+static void line_limit_notice(void)
+{
+    char msg[40];
+
+    if (g_line_limit) {
+        str_copy(msg, "Line ");
+        num_format(msg + str_len(msg), g_editor.max_lines);
+        str_copy(msg + str_len(msg), " holds the rest of the file");
+        dlg_alert("Too Many Lines", msg);
+    }
+}
+
+/*---------------------------------------------------------------------------
  * editor_view - View file (F3)
  *---------------------------------------------------------------------------*/
 void editor_view(const char *filename)
@@ -1037,6 +1067,7 @@ void editor_view(const char *filename)
     g_editor.readonly = TRUE;
 
     if (load_file(filename)) {
+        line_limit_notice();
         editor_run();
     } else {
         dlg_alert("Error", "Cannot open file");
@@ -1071,7 +1102,15 @@ bool_t editor_edit(const char *filename)
                down to the buffer size - only allow viewing */
             g_editor.readonly = TRUE;
             dlg_alert("File Too Large", "Opened read-only");
+        } else {
+            int16_t attr = dos_get_attr(filename);
+            if (attr >= 0 && (attr & DOS_ATTR_READONLY)) {
+                /* Say so now, not after a session of edits F2 can't save */
+                g_editor.readonly = TRUE;
+                dlg_alert("Read-Only File", "Opened for viewing");
+            }
         }
+        line_limit_notice();
         editor_run();
     } else {
         /* F4 only opens existing files, so this is a real error. Opening an

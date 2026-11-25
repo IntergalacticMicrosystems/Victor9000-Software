@@ -187,9 +187,7 @@ int fops_commit(const char *written, const char *dst)
         if (dos_delete(dst) != 0) {
             dos_set_attr(dst, (uint8_t)attr);
             dos_delete(written);
-            ui_error("Cannot replace file");
-            kbd_wait();
-            ui_clear_status();
+            ui_error_wait("Cannot replace file");
             return -1;
         }
     }
@@ -198,9 +196,7 @@ int fops_commit(const char *written, const char *dst)
         /* The original is gone: keep the only good copy and say where it is */
         str_copy(msg, "New copy left as ");
         str_copy(msg + str_len(msg), path_basename(written));
-        ui_error(msg);
-        kbd_wait();
-        ui_clear_status();
+        ui_error_wait(msg);
         return -1;
     }
     return 0;
@@ -220,16 +216,14 @@ int fops_copy_file(const char *src, const char *dst)
 
     /* Ensure the copy buffer is allocated (no-op if a batch already holds it). */
     if (!copybuf_acquire()) {
-        ui_error("Not enough memory for copy buffer");
-        kbd_wait();
+        ui_error_wait("Not enough memory for copy buffer");
         return FOPS_ERROR;
     }
 
     /* Copying a file onto itself would delete the source in the
        overwrite path below before it is ever opened */
     if (str_cmp_i(src, dst) == 0) {
-        ui_error("Source and destination are the same file");
-        kbd_wait();
+        ui_error_wait("Source and destination are the same file");
         return FOPS_ERROR;
     }
 
@@ -252,8 +246,7 @@ int fops_copy_file(const char *src, const char *dst)
     /* Open source file */
     src_h = dos_open(src, DOS_OPEN_READ);
     if (src_h < 0) {
-        ui_error("Cannot open source file");
-        kbd_wait();
+        ui_error_wait("Cannot open source file");
         return FOPS_ERROR;
     }
 
@@ -268,8 +261,7 @@ int fops_copy_file(const char *src, const char *dst)
     dst_h = (out != (const char *)0) ? dos_create(out, 0) : -1;
     if (dst_h < 0) {
         dos_close(src_h);
-        ui_error("Cannot create destination file");
-        kbd_wait();
+        ui_error_wait("Cannot create destination file");
         return FOPS_ERROR;
     }
 
@@ -277,8 +269,7 @@ int fops_copy_file(const char *src, const char *dst)
     while (1) {
         bytes_read = dos_read(src_h, g_copy_buf, g_copy_buf_size);
         if (bytes_read < 0) {
-            ui_error("Read error");
-            kbd_wait();
+            ui_error_wait("Read error");
             result = FOPS_ERROR;
             break;
         }
@@ -289,8 +280,7 @@ int fops_copy_file(const char *src, const char *dst)
         /* DOS reports a full disk as a short write, not an error */
         bytes_written = dos_write(dst_h, g_copy_buf, (uint16_t)bytes_read);
         if (bytes_written != bytes_read) {
-            ui_error("Write error - disk full?");
-            kbd_wait();
+            ui_error_wait("Write error - disk full?");
             result = FOPS_ERROR;
             break;
         }
@@ -312,8 +302,7 @@ int fops_copy_file(const char *src, const char *dst)
 
     dos_close(src_h);
     if (dos_close(dst_h) != 0 && result == FOPS_OK) {
-        ui_error("Write error - disk full?");
-        kbd_wait();
+        ui_error_wait("Write error - disk full?");
         result = FOPS_ERROR;
     }
 
@@ -361,30 +350,26 @@ int fops_copy_dir(const char *src, const char *dst)
     /* Copying a directory into itself would recurse endlessly: the new
        destination shows up in the live enumeration of the source */
     if (path_is_inside(src, dst)) {
-        ui_error("Cannot copy directory into itself");
-        kbd_wait();
+        ui_error_wait("Cannot copy directory into itself");
         return FOPS_ERROR;
     }
 
     /* Guard the stack against runaway recursion */
     if (g_dir_depth >= MAX_DIR_DEPTH) {
-        ui_error("Directory tree too deep");
-        kbd_wait();
+        ui_error_wait("Directory tree too deep");
         return FOPS_ERROR;
     }
 
     /* Create destination directory */
     if (!fops_make_dir(dst)) {
-        ui_error("Cannot create directory");
-        kbd_wait();
+        ui_error_wait("Cannot create directory");
         return FOPS_ERROR;
     }
 
     /* Build search pattern */
     str_copy(src_path, src);
     if (!path_join(src_path, "*.*", MAX_FULL_PATH)) {
-        ui_error("Path too long");
-        kbd_wait();
+        ui_error_wait("Path too long");
         return FOPS_ERROR;
     }
 
@@ -412,8 +397,7 @@ int fops_copy_dir(const char *src, const char *dst)
             str_copy(dst_path, dst);
             if (!path_join(src_path, dta.name, MAX_FULL_PATH) ||
                 !path_join(dst_path, dta.name, MAX_FULL_PATH)) {
-                ui_error("Path too long");
-                kbd_wait();
+                ui_error_wait("Path too long");
                 result = FOPS_ERROR;
                 break;
             }
@@ -452,8 +436,7 @@ int fops_copy_dir(const char *src, const char *dst)
        read error, the copy is incomplete, and a move must keep the source
        (its delete pass could read the directory fine). */
     if (result == FOPS_OK && found != 18) {
-        ui_error("Cannot read directory");
-        kbd_wait();
+        ui_error_wait("Cannot read directory");
         result = FOPS_ERROR;
     }
     if (result == FOPS_OK && failed) {
@@ -474,8 +457,7 @@ int fops_delete_file(const char *path)
     }
 
     if (dos_delete(path) != 0) {
-        ui_error("Cannot delete file");
-        kbd_wait();
+        ui_error_wait("Cannot delete file");
         return FOPS_ERROR;
     }
 
@@ -495,16 +477,14 @@ int fops_delete_dir(const char *path)
 
     /* Guard the stack against runaway recursion */
     if (g_dir_depth >= MAX_DIR_DEPTH) {
-        ui_error("Directory tree too deep");
-        kbd_wait();
+        ui_error_wait("Directory tree too deep");
         return FOPS_ERROR;
     }
 
     /* Build search pattern */
     str_copy(full_path, path);
     if (!path_join(full_path, "*.*", MAX_FULL_PATH)) {
-        ui_error("Path too long");
-        kbd_wait();
+        ui_error_wait("Path too long");
         return FOPS_ERROR;
     }
 
@@ -529,8 +509,7 @@ int fops_delete_dir(const char *path)
             /* Build full path */
             str_copy(full_path, path);
             if (!path_join(full_path, dta.name, MAX_FULL_PATH)) {
-                ui_error("Path too long");
-                kbd_wait();
+                ui_error_wait("Path too long");
                 result = FOPS_ERROR;
                 break;
             }
@@ -579,8 +558,7 @@ int fops_delete_dir(const char *path)
     /* Remove the now-empty directory */
     if (result == FOPS_OK) {
         if (dos_rmdir(path) != 0) {
-            ui_error("Cannot remove directory");
-            kbd_wait();
+            ui_error_wait("Cannot remove directory");
             return FOPS_ERROR;
         }
     }
@@ -634,8 +612,7 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
     int result = FOPS_OK;
 
     if (src->backend == PANEL_SERIAL && dst->backend == PANEL_SERIAL) {
-        ui_error("Both panels are on the serial server");
-        kbd_wait();
+        ui_error_wait("Both panels are on the serial server");
         return FOPS_ERROR;
     }
 
@@ -646,6 +623,7 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
 
     for (i = 0; i < src->files.count; i++) {
         int rc;
+        uint16_t errors;
         const char *fail = "Serial transfer failed";
         f = panel_get_file(src, i);
         if (f == (FileEntry __far *)0) continue;
@@ -694,11 +672,13 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
             }
         }
 
+        errors = g_ui_errors;
         if (src->backend == PANEL_SERIAL) {
             /* Serial -> local (download) */
             rc = file_is_dir(f) ? serialfs_get_tree(remote, local)
                                 : serialfs_get_file(remote, local);
             if (rc == 0 && move) {
+                errors = g_ui_errors;   /* the delete's failure is news */
                 rc = file_is_dir(f) ? serialfs_delete_tree(remote)
                                     : serialfs_delete(remote);
                 fail = "Copied, but cannot delete it on the server";
@@ -722,9 +702,9 @@ static int fops_copy_serial(Panel *src, Panel *dst, int move)
             break;
         }
         if (rc != 0) {
-            if (fail != (const char *)0) {
-                ui_error(fail);
-                kbd_wait();
+            /* No second prompt when the failing step already showed one */
+            if (fail != (const char *)0 && g_ui_errors == errors) {
+                ui_error_wait(fail);
             }
             result = FOPS_ERROR;
         }
@@ -774,8 +754,7 @@ static int fops_delete_serial(Panel *panel)
         if (rc == SFS_CANCEL) {
             result = FOPS_CANCEL;
         } else if (rc != 0) {
-            ui_error("Cannot delete on server");
-            kbd_wait();
+            ui_error_wait("Cannot delete on server");
             result = FOPS_ERROR;
         }
     } else {
@@ -805,8 +784,7 @@ static int fops_delete_serial(Panel *panel)
             }
         }
         if (result == FOPS_ERROR) {
-            ui_error("Cannot delete some files on server");
-            kbd_wait();
+            ui_error_wait("Cannot delete some files on server");
         }
     }
 
@@ -868,9 +846,7 @@ int fops_file_op(void)
         case 'D': return fops_delete();
         case 'R':
             if (single == (FileEntry __far *)0) {
-                ui_error("Select one file to rename");
-                kbd_wait();
-                ui_clear_status();
+                ui_error_wait("Select one file to rename");
                 return FOPS_CANCEL;
             }
             return fops_rename(single);
@@ -898,8 +874,7 @@ int fops_copy(void)
     }
 
     if (same_location(src_panel, dst_panel)) {
-        ui_error("Source and destination are the same directory");
-        kbd_wait();
+        ui_error_wait("Source and destination are the same directory");
         return FOPS_ERROR;
     }
 
@@ -1009,8 +984,7 @@ int fops_move(void)
     }
 
     if (same_location(src_panel, dst_panel)) {
-        ui_error("Source and destination are the same directory");
-        kbd_wait();
+        ui_error_wait("Source and destination are the same directory");
         return FOPS_ERROR;
     }
 
@@ -1186,8 +1160,7 @@ int fops_mkdir(void)
         /* The server accepts an existing directory (tree copies merge into
          * it), so check the listing for a name that is already there. */
         if (panel_has_name(panel, name) || serialfs_mkdir(remote) != 0) {
-            ui_error("Cannot create directory");
-            kbd_wait();
+            ui_error_wait("Cannot create directory");
             return FOPS_ERROR;
         }
         panel_read_dir(panel);
@@ -1198,8 +1171,7 @@ int fops_mkdir(void)
     path_build(path, panel->drive, panel->path, name);
 
     if (dos_mkdir(path) != 0) {
-        ui_error("Cannot create directory");
-        kbd_wait();
+        ui_error_wait("Cannot create directory");
         return FOPS_ERROR;
     }
 
@@ -1242,12 +1214,17 @@ int fops_rename(FileEntry __far *f)
         char old_rel[MAX_FULL_PATH];
         serialfs_build_rel(panel, old_name, old_rel);
         if (serialfs_rename(old_rel, new_name) != 0) {
-            ui_error("Cannot rename file");
-            kbd_wait();
+            ui_error_wait("Cannot rename file");
             return FOPS_ERROR;
         }
         panel_read_dir(panel);
         return FOPS_OK;
+    }
+
+    /* DOS stores names in upper case, so a case-only change is a no-op
+       (and dos_rename would fail on the name already existing) */
+    if (str_cmp_i(old_name, new_name) == 0) {
+        return FOPS_CANCEL;
     }
 
     /* Build full paths */
@@ -1255,8 +1232,7 @@ int fops_rename(FileEntry __far *f)
     path_build(new_path, panel->drive, panel->path, new_name);
 
     if (dos_rename(old_path, new_path) != 0) {
-        ui_error("Cannot rename file");
-        kbd_wait();
+        ui_error_wait("Cannot rename file");
         return FOPS_ERROR;
     }
 

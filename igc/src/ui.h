@@ -60,6 +60,11 @@ void ui_error(const char *msg);
 /* Clear status line */
 void ui_clear_status(void);
 
+/* Show an error, wait for a key, then clear it. Each call bumps
+   g_ui_errors, so a caller can tell a callee already reported a failure. */
+void ui_error_wait(const char *msg);
+extern uint16_t g_ui_errors;
+
 /*---------------------------------------------------------------------------
  * Progress Display
  *---------------------------------------------------------------------------*/

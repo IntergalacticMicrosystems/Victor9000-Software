@@ -36,7 +36,7 @@
 | Left/Right | Parent directory / enter directory | |
 | PgUp/PgDn | Scroll page | Word arrow keys |
 | Home/End | Jump to first/last file | |
-| Enter | Open directory or view file | |
+| Enter | Open directory (F3 views a file) | |
 | Backspace | Go to parent directory | |
 | Space | Select/deselect file | |
 | Esc or Q | Quit | |
@@ -99,8 +99,9 @@ uppercase 8.3 names (long/mixed-case names are mangled to `NAME~1.EXT`).
 Copying a file over an existing file asks before overwriting (Yes/No/All) in
 either direction, like a local copy. For an upload igc checks the server
 panel's listing, so a name the panel had no room for is replaced without
-asking. Recursive directory copies merge and overwrite silently. On the PC,
-igcfs replaces read-only files too, directory merges included.
+asking. Recursive directory copies merge and overwrite silently. Read-only
+files are replaced too, on either side, directory merges included. The editor
+(F4) opens a read-only file, local or on the server, for viewing only.
 
 The link runs **8N1 at 38400 baud over a 3-wire cable (no hardware flow control)**.
 
@@ -151,8 +152,9 @@ a time through DOS (INT 25h / 26h). Only drives A: and B: are offered.
 **Copy disk to image file:** pick the floppy, then type a file name (default
 `DISK.RLE`; the extension `.IMG` or `.RLE` picks the format). The prompt
 shows the destination above the name: the active pane's directory, on a local
-drive or the serial server (an existing file of that name asks before being
-overwritten). Sidedness comes
+drive or the serial server (an existing file of that name, even a read-only
+one, asks before being overwritten; on the server only names the panel lists
+are checked). Sidedness comes
 from the disk label. Esc between tracks aborts and deletes the partial image.
 
 **Write disk from image file:** put the cursor on a `.IMG` / `.RLE` file in the

@@ -129,6 +129,7 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
     uint8_t cur;
     int rc;
     bool_t keep = FALSE;
+    bool_t ro;
 
     /* Copy the 8.3 name out of far storage, form the remote relative path. */
     str_copy_n(name, f->name, 13);
@@ -147,8 +148,7 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
     if (rc != 0) {
         ui_clear_status();
         if (rc != SFS_CANCEL) {             /* Esc needs no message */
-            ui_error("Cannot fetch remote file");
-            kbd_wait();
+            ui_error_wait("Cannot fetch remote file");
         }
         return;
     }
@@ -161,6 +161,13 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
             dos_delete(temp);
             return;
         }
+    }
+
+    /* A read-only server file opens read-only, like a local one, instead
+       of being replaced by the upload below */
+    ro = (f->attr & DOS_ATTR_READONLY) ? TRUE : FALSE;
+    if (ro) {
+        dos_set_attr(temp, DOS_ATTR_READONLY);
     }
 
     if (edit) {
@@ -188,8 +195,7 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
                                                : "Not saved to server - edits in ");
                 str_copy(msg + str_len(msg), kept);
                 ui_clear_status();
-                ui_error(msg);
-                kbd_wait();
+                ui_error_wait(msg);
                 keep = TRUE;
             } else {
                 ui_clear_status();
@@ -201,6 +207,9 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
     }
 
     if (!keep) {
+        if (ro) {
+            dos_set_attr(temp, 0);
+        }
         dos_delete(temp);
     }
 }
@@ -224,9 +233,7 @@ static void handle_fkey(uint8_t fkey_num)
                  * and the server's upload directory tracks the last listing -
                  * two serial panes would fight over both. */
                 if (panel_get_other()->backend == PANEL_SERIAL) {
-                    ui_error("Other panel is already on the serial server");
-                    kbd_wait();
-                    ui_clear_status();
+                    ui_error_wait("Other panel is already on the serial server");
                     ui_draw_fkey_bar();
                     break;
                 }
@@ -242,10 +249,9 @@ static void handle_fkey(uint8_t fkey_num)
                     g_need_redraw = TRUE;
                 } else {
                     ui_clear_status();
-                    ui_error(port == SERIALFS_PORT_B
-                             ? "No serial server on Serial B - run igcfs.exe on the host"
-                             : "No serial server on Serial A - run igcfs.exe on the host");
-                    kbd_wait();
+                    ui_error_wait(port == SERIALFS_PORT_B
+                                  ? "No serial server on Serial B - run igcfs.exe on the host"
+                                  : "No serial server on Serial A - run igcfs.exe on the host");
                 }
             } else if (drive >= 0) {
                 panel_set_drive(p, (uint8_t)drive);

@@ -8,6 +8,7 @@
 #include "mem.h"
 #include "dosapi.h"
 #include "serialfs.h"
+#include "keyboard.h"
 
 /*---------------------------------------------------------------------------
  * Constants
@@ -370,6 +371,20 @@ void ui_error(const char *msg)
 void ui_clear_status(void)
 {
     scr_fill_rect(0, ROW_STATUS, 80, 1, ' ', ATTR_DIM);
+}
+
+/*---------------------------------------------------------------------------
+ * ui_error_wait - Show an error until a key is pressed, then clear it
+ *---------------------------------------------------------------------------*/
+uint16_t g_ui_errors;
+
+void ui_error_wait(const char *msg)
+{
+    ui_error(msg);
+    kbd_flush();                        /* a typed-ahead key must not dismiss it */
+    kbd_wait();
+    ui_clear_status();
+    g_ui_errors++;
 }
 
 /*---------------------------------------------------------------------------

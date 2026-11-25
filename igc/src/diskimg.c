@@ -271,7 +271,8 @@ static const char *loc_open(bool_t create, const char *path, uint16_t *total)
     g_in_pos = g_in_len = g_run_left = 0;
 
     if (create) {
-        g_lwrite = fops_stage(g_lpath, FALSE);
+        /* Force: the caller confirmed overwriting an existing image */
+        g_lwrite = fops_stage(g_lpath, TRUE);
         g_fh = (g_lwrite != (const char *)0) ? dos_create(g_lwrite, 0) : -1;
         if (g_fh < 0) {
             return "Cannot create image file";
@@ -461,7 +462,7 @@ static const char *loc_close(bool_t ok, uint32_t crc)
     if (g_create && (!ok || err != (const char *)0)) {
         dos_delete(g_lwrite);
     } else if (g_create && fops_commit(g_lwrite, g_lpath) != 0) {
-        err = "Cannot replace image file";
+        err = "";                       /* fops_commit showed why */
     }
     if (!g_create && ok && g_rle && crc != g_hdr_crc) {
         err = "Image CRC mismatch";
@@ -628,7 +629,7 @@ void diskimg_read_to_file(void)
                     (uint8_t)((total == SECTORS_DS) ? 160 : 80), &crc);
     err = io->close(ok, ok ? crc : 0);
     ui_hide_progress();
-    if (ok && err != (const char *)0) {
+    if (ok && err != (const char *)0 && err[0] != '\0') {
         dlg_alert("Error", err);
     }
     bufs_free();

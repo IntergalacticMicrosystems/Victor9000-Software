@@ -300,8 +300,10 @@ int serialfs_get_file(const char *remote_rel, const char *local_path)
     }
 
     /* The receiver truncates its target and deletes it on failure, so give it
-     * a temp file whenever a local file already exists. */
-    out = fops_stage(local_path, FALSE);
+     * a temp file whenever a local file already exists. Force: callers have
+     * confirmed the overwrite (or are merging a tree), even of a read-only
+     * file. */
+    out = fops_stage(local_path, TRUE);
     if (out == (const char *)0) {
         return -1;
     }
@@ -737,37 +739,32 @@ static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
     int result = 0;
 
     if (g_tree_depth >= SFS_TREE_MAX_DEPTH) {
-        ui_error("Directory tree too deep");
-        kbd_wait();
+        ui_error_wait("Directory tree too deep");
         return -1;
     }
 
     /* Longer remote paths do not fit the LIST/START packets and would be
      * silently truncated to some other path (see serialfs_get_file). */
     if (str_len(remote_rel) >= FTX_MAX_FILENAME) {
-        ui_error("Remote path too long");
-        kbd_wait();
+        ui_error_wait("Remote path too long");
         return -1;
     }
 
     /* Create the local destination directory. */
     if (!fops_make_dir(local_path)) {
-        ui_error("Cannot create directory");
-        kbd_wait();
+        ui_error_wait("Cannot create directory");
         return -1;
     }
 
     /* Collect this directory's entries into the arena above the current mark. */
     base = g_walk_used;
     if (sfs_list(remote_rel, sfs_walk_cb, &overflow) < 0) {
-        ui_error("Serial server not responding - run igcfs.exe on the host");
-        kbd_wait();
+        ui_error_wait("Serial server not responding - run igcfs.exe on the host");
         g_walk_used = base;
         return -1;
     }
     if (overflow) {
-        ui_error("Directory too large to copy");
-        kbd_wait();
+        ui_error_wait("Directory too large to copy");
         g_walk_used = base;
         return -1;
     }
@@ -785,8 +782,7 @@ static int sfs_get_tree_r(const char *remote_rel, const char *local_path)
         str_copy(lchild, local_path);
         if (!path_join(rchild, name, MAX_FULL_PATH) ||
             !path_join(lchild, name, MAX_FULL_PATH)) {
-            ui_error("Path too long");
-            kbd_wait();
+            ui_error_wait("Path too long");
             result = -1;
             continue;               /* loop condition ends the walk */
         }
@@ -828,8 +824,7 @@ static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
     bool_t made;
 
     if (g_tree_depth >= SFS_TREE_MAX_DEPTH) {
-        ui_error("Directory tree too deep");
-        kbd_wait();
+        ui_error_wait("Directory tree too deep");
         return -1;
     }
 
@@ -837,8 +832,7 @@ static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
      * FTX_MAX_FILENAME-1 chars; child names below need room on top of this,
      * but refusing here (rather than at each child) gives one clear error. */
     if (str_len(remote_rel) >= FTX_MAX_FILENAME) {
-        ui_error("Remote path too long");
-        kbd_wait();
+        ui_error_wait("Remote path too long");
         return -1;
     }
 
@@ -851,8 +845,7 @@ static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
 
     str_copy(src_child, local_path);
     if (!path_join(src_child, "*.*", MAX_FULL_PATH)) {
-        ui_error("Path too long");
-        kbd_wait();
+        ui_error_wait("Path too long");
         return -1;
     }
 
@@ -873,8 +866,7 @@ static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
             str_copy(rchild, remote_rel);
             if (!path_join(src_child, dta.name, MAX_FULL_PATH) ||
                 !path_join(rchild, dta.name, MAX_FULL_PATH)) {
-                ui_error("Path too long");
-                kbd_wait();
+                ui_error_wait("Path too long");
                 result = -1;
                 break;
             }
@@ -901,8 +893,7 @@ static int sfs_put_tree_r(const char *local_path, const char *remote_rel)
     /* A search that ends in anything but "no more files" (18) hit a read
        error: the upload is incomplete, and a move must keep the source. */
     if (result == 0 && found != 18) {
-        ui_error("Cannot read directory");
-        kbd_wait();
+        ui_error_wait("Cannot read directory");
         result = -1;
     }
     /* Neither MKDIR nor any child got through (the caller reports it). */
@@ -923,29 +914,25 @@ static int sfs_delete_tree_r(const char *remote_rel)
     int result = 0;
 
     if (g_tree_depth >= SFS_TREE_MAX_DEPTH) {
-        ui_error("Directory tree too deep");
-        kbd_wait();
+        ui_error_wait("Directory tree too deep");
         return -1;
     }
 
     /* Same truncation guard as sfs_get_tree_r: a too-long path would list -
      * and then delete - some other remote path. */
     if (str_len(remote_rel) >= FTX_MAX_FILENAME) {
-        ui_error("Remote path too long");
-        kbd_wait();
+        ui_error_wait("Remote path too long");
         return -1;
     }
 
     base = g_walk_used;
     if (sfs_list(remote_rel, sfs_walk_cb, &overflow) < 0) {
-        ui_error("Serial server not responding - run igcfs.exe on the host");
-        kbd_wait();
+        ui_error_wait("Serial server not responding - run igcfs.exe on the host");
         g_walk_used = base;
         return -1;
     }
     if (overflow) {
-        ui_error("Directory too large to delete");
-        kbd_wait();
+        ui_error_wait("Directory too large to delete");
         g_walk_used = base;
         return -1;
     }
@@ -961,8 +948,7 @@ static int sfs_delete_tree_r(const char *remote_rel)
 
         str_copy(rchild, remote_rel);
         if (!path_join(rchild, name, MAX_FULL_PATH)) {
-            ui_error("Path too long");
-            kbd_wait();
+            ui_error_wait("Path too long");
             result = -1;
             continue;               /* loop condition ends the walk */
         }
@@ -996,8 +982,7 @@ int serialfs_get_tree(const char *remote_rel, const char *local_path)
         return -1;
     }
     if (!sfs_walk_alloc()) {
-        ui_error("Out of memory for directory copy");
-        kbd_wait();
+        ui_error_wait("Out of memory for directory copy");
         return -1;
     }
     rc = sfs_get_tree_r(remote_rel, local_path);
@@ -1022,8 +1007,7 @@ int serialfs_delete_tree(const char *remote_rel)
         return -1;
     }
     if (!sfs_walk_alloc()) {
-        ui_error("Out of memory for directory delete");
-        kbd_wait();
+        ui_error_wait("Out of memory for directory delete");
         return -1;
     }
     rc = sfs_delete_tree_r(remote_rel);
