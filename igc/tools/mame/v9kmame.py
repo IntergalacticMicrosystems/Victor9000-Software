@@ -162,7 +162,7 @@ class Victor:
         self._wait(lambda: os.path.exists(os.path.join(self.ctl, "ready")), 30,
                    "MAME did not start (see mame.log)")
         new = sorted(set(glob.glob("/dev/pts/[0-9]*")) - before)
-        if len(new) != serial + mouse:
+        if (serial or mouse) and len(new) != serial + mouse:
             raise RuntimeError("cannot find MAME's ptys: %r" % new)
         if serial and mouse:
             # MAME opens rs232a's pty first; mame_ptys lists them in fd order
