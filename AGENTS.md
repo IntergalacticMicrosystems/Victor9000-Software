@@ -26,6 +26,7 @@ build/test/run commands, apply at most one AGENTS.md change and report it with o
 ## Lessons learned
 
 - igc build on this box: `make WATCOM=/root/tools/openwatcom2` (the Makefile's default /opt/watcom does not exist here).
+- igc MAME tests `escdl` and `view` fail now and then on unchanged code (escdl: the Esc misses the download); rerun them alone before blaming a change.
 
 ## Continuous improvement
 

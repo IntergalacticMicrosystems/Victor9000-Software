@@ -13,7 +13,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from v9kmame import Victor  # noqa: E402
+from v9kmame import Victor, vtg  # noqa: E402
 
 WORK = "/srv/prime/work/v9kmame-tests"
 results = []
@@ -238,9 +238,51 @@ def t_mouse_dialogs():
     check("click on (Y)es replaced B:M.TXT", vm.get_b("M.TXT") == data)
 
 
+def t_full_disk_overwrite():
+    """Copy B: -> A: over an existing file on a nearly full A: (the boot
+    floppy, 14 KB free). The new copy fits only once the old one is gone."""
+    print("copy over a file on a full disk")
+    old, new = b"o" * 12288, os.urandom(12288)          # 6 clusters each
+    vm = Victor(os.path.join(WORK, "fulldisk"), b_files={"A.DAT": new})
+    tmp = os.path.join(vm.work, "old.tmp")
+    with open(tmp, "wb") as f:
+        f.write(old)
+    vtg("copy", tmp, vm.a_img + ":\\A.DAT")             # leaves 1 cluster free
+    os.remove(tmp)
+    try:
+        vm.start(serial=False)
+        vm.post("b:\r")
+        vm.post("igc\r")
+        vm.wait_text("IGC.EXE", timeout=120)
+        vm.press("F1")                                  # left panel to A:
+        vm.wait_text("Serial A")
+        vm.press("HOME")
+        vm.press("ENTER")
+        vm.wait_text("COMMAND.COM", timeout=60)
+        vm.press("TAB")                                 # B: panel, A.DAT first
+        time.sleep(1)
+        top(vm)
+        vm.press("F5")
+        vm.wait_text("(C)opy")
+        vm.post("c")
+        vm.wait_text("File Exists", timeout=30)
+        vm.post("y")
+        time.sleep(8)
+        screen = vm.screen()
+        check("no error shown", "ERROR" not in screen, "\n" + screen)
+        quit_igc(vm)
+    finally:
+        vm.stop()
+    out = os.path.join(vm.work, "a.out")
+    vtg("copy", vm.a_img + ":\\A.DAT", out)
+    with open(out, "rb") as f:
+        check("A:A.DAT replaced with the B: copy", f.read() == new)
+
+
 TESTS = {"download": t_download, "upload": t_upload, "view": t_view_column40,
          "readonly": t_edit_readonly_server, "banner": t_error_banner,
-         "escdl": t_esc_download, "mouse": t_mouse_dialogs}
+         "escdl": t_esc_download, "mouse": t_mouse_dialogs,
+         "fulldisk": t_full_disk_overwrite}
 
 if __name__ == "__main__":
     args = sys.argv[1:]
