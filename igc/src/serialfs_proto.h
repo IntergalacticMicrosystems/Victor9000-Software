@@ -2,8 +2,14 @@
  * serialfs_proto.h - igc <-> igcfs serial protocol extension
  *
  * Command bytes for the file-manager operations the vetted FTX protocol does
- * not cover. They live in the free part of the FTX command space (0x10-0x1F;
- * 0x1F is FTX_CMD_QUIT), so they ride the same packet stream as LIST/START.
+ * not cover. They sit in the FTX command space (0x10-0x1F; 0x1F is
+ * FTX_CMD_QUIT), so they ride the same packet stream as LIST/START.
+ *
+ * 0x1A and 0x1B are no longer free: viclibc2 now uses them for
+ * FTX_CMD_QUERY/FTX_CMD_HAVE (segmented transfers, ftx_server.c). igc does
+ * not link that code, so nothing collides today. Renumbering would break
+ * every deployed igc/igcfs pair, so move DELETE/MKDIR only if igc ever
+ * adopts segmented transfers, and then on both sides at once.
  *
  * MUST stay in sync with tools/serialfs/igcfs.py.
  */

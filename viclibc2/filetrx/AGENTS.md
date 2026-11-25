@@ -12,7 +12,15 @@ A file transfer library for transferring files between a modern PC (Python scrip
 - Built on the serial library in ../serial/
 - Written in OpenWatcom C like the serial library
 - Bidirectional transfers (PC <-> Victor)
-- Robust transfers using CRC-32 file verification
+- Robust transfers using CRC-32 file verification. Opt-in (`ftx.verify = 1`
+  after `ftx_init`; igc sets it, FTXSERV/FTXTEST do not): after END, a failed
+  final close returns `FTX_ERR_FILE`, and a receive written from offset 0 (a
+  whole file, or a first segment) is re-read: its size must equal START's
+  `file_size` and its CRC-32 the END packet's `file_crc`, else the file is
+  deleted and the receive returns `FTX_ERR_CRC` (`FTX_ERR_FILE` on a read
+  error). END is already ACKed by then and the sender hears nothing, so only a
+  client that acts on the return value should set it; a polled server would
+  also stop servicing the link for the length of the re-read.
 - Packet-level CRC-16 via the underlying packet protocol
 - Error detection, recovery with retries, graceful failure
 - Optional RLE compression (fast decompression on Victor side)
@@ -277,8 +285,8 @@ Throughput is essentially line rate (baud/10):
 
 - 64 KB and 256 KB putfile + getfile verified byte-identical both ways on real
   hardware at 38400 (see `../serial/AGENTS.md`, "Polled packet layer + FTXSERV").
-- RLE roughly halves wall-clock on compressible data; CRC-32 of the whole file
-  before a getfile adds a fixed startup cost.
+- RLE roughly halves wall-clock on compressible data. The opt-in verify adds
+  one full read and CRC pass of the file at the end of a receive.
 
 # Testing
 

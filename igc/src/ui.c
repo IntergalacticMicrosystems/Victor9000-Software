@@ -35,6 +35,10 @@ void ui_draw_frame(void)
 {
     uint8_t i;
 
+    /* Every caller repaints the whole screen (startup, after the editor).
+       Column 40 belongs to no panel draw, so clear what the editor left. */
+    scr_clear();
+
     /* Title bar corners (row 0) */
     scr_putc_xy(0, ROW_TITLE, BOX_TL, ATTR_DIM);
     scr_putc_xy(39, ROW_TITLE, BOX_T_DN, ATTR_DIM);

@@ -80,6 +80,7 @@ bool_t serialfs_connect(uint8_t port, uint8_t baud_idx)
     ser_set_baud(port, baud_idx);
     pkt_init_polled(&g_pkt, port);      /* polled mode - no ISR on this port */
     ftx_init(&g_ftx, &g_pkt);
+    g_ftx.verify = 1;   /* re-read downloads: igc reports a mismatch itself */
 
     /* Allocate the app-owned staging buffer and hand it to filetrx. Same tiered
      * size + single fallback-to-floor as the editor/copy buffers. Without it,

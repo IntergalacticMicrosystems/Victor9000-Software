@@ -17,7 +17,6 @@
  * Static Variables
  *---------------------------------------------------------------------------*/
 static Editor g_editor;
-static uint16_t __far *g_screen_save = (uint16_t __far *)0;
 
 /* Cut buffer for Ctrl-K/Ctrl-U (multi-line cut/paste). Allocated on the far
  * heap on first cut (not held in DGROUP) and kept for the program lifetime so
@@ -37,13 +36,12 @@ static bool_t g_saved_any = FALSE;
  *---------------------------------------------------------------------------*/
 bool_t editor_init(void)
 {
-    /* The text buffer, line table and screen-save buffer are now allocated
+    /* The text buffer and line table are allocated
      * lazily when a file is opened (editor_acquire) and freed on close, so an
      * idle IGC holds no editor heap - critical on a 128K machine. Nothing to
      * allocate here; just make sure the pointers are clear. */
     g_editor.buffer = (char __far *)0;
     g_editor.line_offs = (uint16_t __far *)0;
-    g_screen_save = (uint16_t __far *)0;
     g_cut_buffer = (char __far *)0;
     g_cut_len = 0;
     g_last_was_cut = FALSE;
@@ -99,16 +97,6 @@ static bool_t editor_acquire(void)
         return FALSE;
     }
 
-    /* Allocate screen save buffer */
-    g_screen_save = (uint16_t __far *)mem_alloc(80 * 25 * 2);
-    if (g_screen_save == (uint16_t __far *)0) {
-        mem_free(g_editor.line_offs);
-        g_editor.line_offs = (uint16_t __far *)0;
-        mem_free(g_editor.buffer);
-        g_editor.buffer = (char __far *)0;
-        return FALSE;
-    }
-
     return TRUE;
 }
 
@@ -118,10 +106,6 @@ static bool_t editor_acquire(void)
  *---------------------------------------------------------------------------*/
 static void editor_release(void)
 {
-    if (g_screen_save != (uint16_t __far *)0) {
-        mem_free(g_screen_save);
-        g_screen_save = (uint16_t __far *)0;
-    }
     if (g_editor.line_offs != (uint16_t __far *)0) {
         mem_free(g_editor.line_offs);
         g_editor.line_offs = (uint16_t __far *)0;
@@ -1060,21 +1044,17 @@ void editor_view(const char *filename)
         return;
     }
 
-    /* Save screen */
-    scr_save_rect(0, 0, 80, 25, g_screen_save);
-    scr_clear();
-
     g_editor.readonly = TRUE;
 
+    /* The caller repaints its screen afterwards: no 4 KB save buffer */
     if (load_file(filename)) {
+        scr_clear();
         line_limit_notice();
         editor_run();
     } else {
         dlg_alert("Error", "Cannot open file");
     }
 
-    /* Restore screen */
-    scr_restore_rect(0, 0, 80, 25, g_screen_save);
     editor_release();
 }
 
@@ -1089,14 +1069,12 @@ bool_t editor_edit(const char *filename)
         return FALSE;
     }
 
-    /* Save screen */
-    scr_save_rect(0, 0, 80, 25, g_screen_save);
-    scr_clear();
-
     g_editor.readonly = FALSE;
     g_saved_any = FALSE;
 
+    /* The caller repaints its screen afterwards: no 4 KB save buffer */
     if (load_file(filename)) {
+        scr_clear();
         if (g_editor.truncated) {
             /* Editing a partial load and saving would cut the file
                down to the buffer size - only allow viewing */
@@ -1118,8 +1096,6 @@ bool_t editor_edit(const char *filename)
         dlg_alert("Error", "Cannot open file");
     }
 
-    /* Restore screen */
-    scr_restore_rect(0, 0, 80, 25, g_screen_save);
     editor_release();
 
     return g_saved_any;

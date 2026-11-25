@@ -66,7 +66,9 @@ from v9kfiletrx.protocol import (CHUNK_SIZE, DATA_FLAG_COMPRESSED, START_FLAG_FL
 import v9kimage
 
 # --- igc protocol extension (must match igc/src/serialfs_proto.h) -------------
-# The vetted FTX command space uses 0x10-0x1F (0x1F = QUIT); 0x1A-0x1D are free.
+# The vetted FTX command space uses 0x10-0x1F (0x1F = QUIT). 0x1A/0x1B overlap
+# viclibc2's later FTX_CMD_QUERY/HAVE, which igc does not use; see
+# serialfs_proto.h before renumbering.
 CMD_DELETE = 0x1A   # payload: [cmd][path_len][path]
 CMD_MKDIR  = 0x1B   # payload: [cmd][path_len][path]
 CMD_RENAME = 0x1C   # payload: [cmd][old_len][old][new_len][new]

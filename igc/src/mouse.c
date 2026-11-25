@@ -43,7 +43,7 @@ static uint16_t g_context = 0;
 static uint16_t g_shown_context = 0;
 
 /*---------------------------------------------------------------------------
- * dos_hundredths - DOS clock as hundredths of a second within the hour
+ * dos_hundredths - DOS clock as hundredths of a second since midnight
  *---------------------------------------------------------------------------*/
 static uint32_t dos_hundredths(void)
 {
@@ -237,15 +237,18 @@ bool_t mouse_poll(KeyEvent *e)
 
     n = press_count(0, &cx, &cy);
     if (n != 0) {
+        uint32_t elapsed;
+
         now = dos_hundredths();
+        elapsed = now - g_last_time;
         if (now < g_last_time) {
-            now += 8640000L;            /* DOS clock wrapped at midnight */
+            elapsed += 8640000L;        /* DOS clock wrapped at midnight */
         }
         g_mouse_x = cx;
         g_mouse_y = cy;
         e->type = KEY_MOUSE;
         if (cx == g_last_x && cy == g_last_y &&
-            now - g_last_time <= MOUSE_DBL_TIME) {
+            elapsed <= MOUSE_DBL_TIME) {
             e->code = MOUSE_LEFT_DBL;
             g_last_x = 0xFF;            /* a third click starts over */
             g_last_y = 0xFF;

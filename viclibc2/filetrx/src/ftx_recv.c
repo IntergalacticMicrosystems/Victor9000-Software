@@ -446,11 +446,45 @@ int ftx_receive_file(ftx_state_t *state, const char *dst_path,
     return ftx_recv_after_start(state, dst_path, overwrite, progress);
 }
 
+/**
+ * Re-read a received file: its size must be state->file_size and its CRC-32
+ * the END packet's. Reads through the staging buffer (the transfer is over).
+ */
+static int verify_file(ftx_state_t *state, const char *filename, uint32_t crc)
+{
+    ftx_file_t fh;
+    uint32_t total = 0;
+    uint32_t got = FTX_CRC32_INIT;
+    uint16_t step = (state->io_bufsize > 0x4000) ? 0x4000 : state->io_bufsize;
+    int16_t n;
+
+    fh = ftx_file_open(filename, FTX_OPEN_READ);
+    if (fh == FTX_FILE_INVALID) {
+        state->last_error = FTX_ERR_FILE;
+        return FTX_ERR_FILE;
+    }
+    while ((n = ftx_file_read(fh, state->io_buf, step)) > 0) {
+        got = ftx_crc32_update(got, state->io_buf, (uint16_t)n);
+        total += (uint16_t)n;
+    }
+    ftx_file_close(fh);
+    if (n < 0) {
+        state->last_error = FTX_ERR_FILE;
+        return FTX_ERR_FILE;
+    }
+    if (total != state->file_size || (got ^ FTX_CRC32_INIT) != crc) {
+        state->last_error = FTX_ERR_CRC;
+        return FTX_ERR_CRC;
+    }
+    return FTX_OK;
+}
+
 int ftx_recv_after_start(ftx_state_t *state, const char *dst_path,
                          int overwrite, ftx_progress_fn progress)
 {
     int result;
     const char *filename;
+    uint32_t end_crc;
 
     /* A registered staging buffer is required for the write batching below. */
     if (state->io_buf == (uint8_t *)0) {
@@ -534,11 +568,25 @@ int ftx_recv_after_start(ftx_state_t *state, const char *dst_path,
 
     /* Process END packet */
     result = process_end_packet(state);
+    end_crc = ((ftx_end_t *)state->pkt_buf)->file_crc;
 
-    /* Close file and set date/time */
+    /* Close file and set date/time. With verify on, a failed close (DOS
+       could not write its last buffers) fails the transfer too. */
     ftx_file_set_datetime(state->file_handle, state->file_date, state->file_time);
-    ftx_file_close(state->file_handle);
+    if (ftx_file_close(state->file_handle) != 0 && result == FTX_OK &&
+        state->verify) {
+        state->last_error = FTX_ERR_FILE;
+        result = FTX_ERR_FILE;
+    }
     state->file_handle = FTX_FILE_INVALID;
+
+    /* Opt-in whole-file check (see ftx_state_t.verify): re-read what landed
+       on disk, outside the timed chunk loop, and compare its size and CRC
+       with what the sender sent. Only for a file written from offset 0,
+       which this transfer created. */
+    if (result == FTX_OK && state->verify && state->file_offset == 0) {
+        result = verify_file(state, filename, end_crc);
+    }
 
     if (result != FTX_OK) {
         /* Verification failed - delete a fresh file, but keep a partial
@@ -546,8 +594,6 @@ int ftx_recv_after_start(ftx_state_t *state, const char *dst_path,
         if (state->file_offset == 0) ftx_file_delete(filename);
         return result;
     }
-
-    /* TODO: Verify file CRC by re-reading file */
 
     return FTX_OK;
 }

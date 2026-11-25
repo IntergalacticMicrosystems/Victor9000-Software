@@ -175,6 +175,13 @@ static void serial_view_edit(Panel *p, FileEntry __far *f, bool_t edit)
          * untouched or discarded buffer back would just re-transmit the same
          * bytes at 38400 baud. */
         if (editor_edit(temp)) {
+            /* The editor leaves its own screen up: show the panels under
+               the upload's progress and any error */
+            ui_draw_frame();
+            ui_draw_headers();
+            ui_draw_fkey_bar();
+            ui_draw_panels();
+            ui_draw_title_bar();
             ui_status("Saving to server...");
             rc = serialfs_put_file(temp, remote);
             if (rc != 0) {
@@ -371,8 +378,7 @@ static void handle_mouse(uint8_t button)
 
     if (which != g_active_panel) {
         panel_switch();
-        ui_draw_title_bar();
-        g_need_redraw = TRUE;
+        g_need_redraw = TRUE;           /* also redraws the title bar */
     }
     if (y == ROW_TITLE) return;
 
@@ -441,8 +447,7 @@ static void handle_key(KeyEvent *key)
         switch (key->code) {
             case KEY_TAB:
                 panel_switch();
-                ui_draw_title_bar();
-                g_need_redraw = TRUE;
+                g_need_redraw = TRUE;   /* also redraws the title bar */
                 break;
 
             case KEY_ENTER:
@@ -541,10 +546,9 @@ int main(void)
     scr_clear();
     scr_cursor_off();
 
-    /* Initialize keyboard and mouse (optional: needs MOUSE.DEV / MOUSE.COM) */
+    /* Initialize keyboard */
     _dos_setvect(0x23, ctrl_break_handler);
     kbd_init();
-    mouse_init();
 
     /* Initialize panels */
     if (!panels_init()) {
@@ -572,6 +576,10 @@ int main(void)
         fatal_msg("IGC: not enough memory for editor\r\n");
         return 1;
     }
+
+    /* Mouse last (optional: needs MOUSE.DEV / MOUSE.COM), so the early
+       exits above never leave its driver hooked */
+    mouse_init();
 
     /* Draw initial UI */
     ui_draw_frame();

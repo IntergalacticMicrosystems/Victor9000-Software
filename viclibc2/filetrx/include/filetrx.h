@@ -76,6 +76,14 @@ typedef struct {
                                    the sender holds off the next one (no FIFO
                                    overrun during a slow floppy write). 0 by default
                                    (ftx_init zeroes the struct). */
+    uint8_t verify;             /* Opt-in, 0 by default: after END, fail a
+                                   receive whose final close fails and re-read a
+                                   file written from offset 0, checking its size
+                                   and CRC-32 (deleted, FTX_ERR_CRC, on a
+                                   mismatch). END is already ACKed by then, so
+                                   only a client that sees the return value (igc)
+                                   should set it; a polled server would also stop
+                                   servicing the link during the re-read. */
 
     /* File handle (when open) */
     ftx_file_t file_handle;

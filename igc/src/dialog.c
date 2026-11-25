@@ -103,6 +103,30 @@ void dlg_print_center(DialogWindow *win, uint8_t y, const char *text)
 }
 
 /*---------------------------------------------------------------------------
+ * choice_hit - Hotkey of the "(X)word" the last click landed on, in a line
+ * drawn by dlg_print_center at row y; 0 if the click missed every word
+ *---------------------------------------------------------------------------*/
+static char choice_hit(DialogWindow *win, uint8_t y, const char *text)
+{
+    uint16_t len = str_len(text);
+    uint8_t x, i;
+
+    if (len > win->w - 2) len = win->w - 2;
+    x = win->x + 1 + (uint8_t)((win->w - 2 - len) / 2);
+    if (g_mouse_y != win->y + 1 + y || g_mouse_x < x || g_mouse_x >= x + len) {
+        return 0;
+    }
+    i = g_mouse_x - x;
+    if (text[i] == ' ') {
+        return 0;
+    }
+    while (i > 0 && text[i - 1] != ' ') {
+        i--;                            /* back to the start of the word */
+    }
+    return (text[i] == '(') ? char_upper(text[i + 1]) : 0;
+}
+
+/*---------------------------------------------------------------------------
  * draw_button - Draw a button
  *---------------------------------------------------------------------------*/
 static void draw_button(uint8_t x, uint8_t y, const char *label, bool_t selected)
@@ -685,6 +709,7 @@ int dlg_floppy_select(const char *title)
  *---------------------------------------------------------------------------*/
 int dlg_file_op(const char *filename)
 {
+    static const char choices[] = "(C)opy (M)ove (D)elete (R)ename";
     DialogWindow win;
     KeyEvent key;
 
@@ -693,20 +718,22 @@ int dlg_file_op(const char *filename)
     }
 
     dlg_print_center(&win, 1, filename);
-    dlg_print_center(&win, 3, "(C)opy (M)ove (D)elete (R)ename");
+    dlg_print_center(&win, 3, choices);
 
     kbd_flush();
 
     while (1) {
         key = kbd_wait();
 
-        if (key.type == KEY_ASCII) {
-            char c = char_upper((char)key.code);
+        if (key.type == KEY_ASCII || key.type == KEY_MOUSE) {
+            char c = (key.type == KEY_MOUSE)
+                         ? (key.code == MOUSE_RIGHT ? 0 : choice_hit(&win, 3, choices))
+                         : char_upper((char)key.code);
             if (c == 'C' || c == 'M' || c == 'D' || c == 'R') {
                 dlg_close(&win);
                 return c;
             }
-            if (key.code == KEY_ESC) {
+            if (key.type == KEY_ASCII && key.code == KEY_ESC) {
                 dlg_close(&win);
                 return 0;
             }
@@ -745,6 +772,7 @@ int dlg_overwrite(const char *filename)
     DialogWindow win;
     KeyEvent key;
     char msg[60];
+    static const char choices[] = "(Y)es / (N)o / (A)ll";
 
     str_copy(msg, "Overwrite ");
     str_copy_n(msg + str_len(msg), filename, 30);
@@ -755,13 +783,18 @@ int dlg_overwrite(const char *filename)
     }
 
     dlg_print_center(&win, 1, msg);
-    dlg_print_center(&win, 3, "(Y)es / (N)o / (A)ll");
+    dlg_print_center(&win, 3, choices);
 
     kbd_flush();
 
     while (1) {
         key = kbd_wait();
 
+        if (key.type == KEY_MOUSE) {
+            /* A click on a choice acts as its key */
+            key.type = KEY_ASCII;
+            key.code = (key.code == MOUSE_RIGHT) ? 0 : (uint8_t)choice_hit(&win, 3, choices);
+        }
         if (key.type == KEY_ASCII) {
             switch (key.code) {
                 case 'y':
