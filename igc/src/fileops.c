@@ -209,9 +209,8 @@ int fops_copy_file(const char *src, const char *dst)
 {
     dos_handle_t src_h, dst_h;
     int16_t bytes_read, bytes_written;
-    int16_t src_attr;
+    int16_t src_attr, dst_attr;
     uint16_t src_date = 0, src_time = 0;
-    const char *out;
     int result = FOPS_OK;
 
     /* Ensure the copy buffer is allocated (no-op if a batch already holds it). */
@@ -255,10 +254,21 @@ int fops_copy_file(const char *src, const char *dst)
         src_date = 0;
     }
 
-    /* An existing destination stays intact until the new copy is complete.
-       Force: the user confirmed the overwrite, even of a read-only file. */
-    out = fops_stage(dst, TRUE);
-    dst_h = (out != (const char *)0) ? dos_create(out, 0) : -1;
+    /* Like DOS COPY, remove an existing destination first, so a full disk
+       gets its space back. The source is untouched, so only the version the
+       user agreed to overwrite is lost (even a read-only one). */
+    dst_attr = dos_get_attr(dst);
+    if (dst_attr >= 0) {
+        if ((dst_attr & DOS_ATTR_DIRECTORY) ||
+            ((dst_attr & DOS_ATTR_READONLY) &&
+             dos_set_attr(dst, (uint8_t)(dst_attr & ~DOS_ATTR_READONLY)) != 0) ||
+            dos_delete(dst) != 0) {
+            dos_close(src_h);
+            ui_error_wait("Cannot replace destination file");
+            return FOPS_ERROR;
+        }
+    }
+    dst_h = dos_create(dst, 0);
     if (dst_h < 0) {
         dos_close(src_h);
         ui_error_wait("Cannot create destination file");
@@ -307,9 +317,7 @@ int fops_copy_file(const char *src, const char *dst)
     }
 
     if (result != FOPS_OK) {
-        dos_delete(out);  /* Clean up partial file */
-    } else if (fops_commit(out, dst) != 0) {
-        result = FOPS_ERROR;
+        dos_delete(dst);  /* Clean up partial file */
     } else if (src_attr > 0) {
         dos_set_attr(dst, (uint8_t)src_attr);
     }
