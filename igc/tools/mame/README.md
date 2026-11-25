@@ -26,9 +26,10 @@ The boot image is never written: every run boots a copy.
 
 ## How a run is set up
 
-- A: is a copy of the boot floppy. B: is the same floppy emptied, plus
-  IGC.EXE and the test's files. `vtg_image_util create` is not used: it
-  writes a PC-style boot sector that Victor DOS cannot read.
+- A: is a copy of the boot floppy. B: is a blank single-sided floppy from
+  `vtg_image_util create -t victor-ss` (needs vtg_image_util 5620839 or
+  later: older versions write a label Victor DOS cannot read), plus IGC.EXE
+  and the test's files.
 - MAME gets `-ramsize 896K` (the 128K default fails with "Configuration too
   large for memory") and `-rs232a pty`. Baud and data bits go in the
   machine's cfg file before launch: changing them while MAME runs makes it

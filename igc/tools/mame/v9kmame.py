@@ -61,17 +61,8 @@ def vtg(*args):
 
 
 def make_blank(path):
-    """An empty data floppy. vtg_image_util's "create" writes a PC-style boot
-    sector that Victor DOS cannot read, so empty a copy of the boot disk."""
-    import json
-    shutil.copyfile(BOOT_IMG, path)
-    out = subprocess.run([sys.executable, "-m", "vtg_image_util", "--json",
-                          "list", path], cwd=VTG, check=True,
-                         capture_output=True, text=True).stdout
-    for entry in json.loads(out)["files"]:
-        if "R" in entry["attr"]:
-            vtg("attr", "--", path + ":\\" + entry["name"], "-R", "-H", "-S")
-        vtg("delete", "-r", path + ":\\" + entry["name"])
+    """An empty single-sided data floppy."""
+    vtg("create", "-t", "victor-ss", "-f", path)
 
 
 class Victor:
